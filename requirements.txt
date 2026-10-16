@@ -1,0 +1,14 @@
+# Phase 1: data pipeline and storage
+sqlalchemy>=2.0
+yfinance>=0.2.40
+apscheduler>=3.10,<4
+pandas>=2.2
+numpy>=1.26
+python-dotenv>=1.0
+
+# Phase 2: technical scoring
+# Install with --only-binary=TA-Lib: wheels bundle the C library (0.8.x needs Python >= 3.11)
+TA-Lib>=0.6.5
+
+# Dev
+pytest>=8.0
