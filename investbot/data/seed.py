@@ -11,7 +11,7 @@ from datetime import time, date
 from sqlalchemy.orm import Session
 
 from investbot.data.models import AssetClass, Exchange, Asset, TaxRegime
-from investbot.config.tickers import NIFTY50_TICKERS, CRYPTO_TICKERS
+from investbot.config.tickers import NIFTY50_TICKERS, CRYPTO_TICKERS, RETIRED_TICKERS
 from investbot.config.tax_regimes import TAX_REGIMES
 
 logger = logging.getLogger(__name__)
@@ -114,6 +114,15 @@ def seed_assets(session: Session, exchanges: dict[str, Exchange]):
             added += 1
     logger.info(f"NIFTY50: added {added} new tickers")
 
+    # Retired symbols: deactivate, keep history
+    retired = 0
+    for ticker in RETIRED_TICKERS:
+        existing = session.query(Asset).filter_by(exchange_id=nse.id, ticker=ticker).first()
+        if existing and existing.is_active:
+            existing.is_active = False
+            retired += 1
+    logger.info(f"NIFTY50: deactivated {retired} retired tickers")
+
     # Crypto
     crypto_added = 0
     for ticker, name, sector, industry in CRYPTO_TICKERS:
@@ -142,9 +151,8 @@ def seed_tax_regimes(session: Session, asset_classes: dict[str, AssetClass]):
             logger.info(f"Tax regime '{regime_name}' already exists")
             continue
 
-        ac_name = regime_data.pop("asset_class_name")
-        ac = asset_classes.get(ac_name)
-        data = {**regime_data}
+        data = {**regime_data}  # copy: don't mutate the module-level TAX_REGIMES
+        ac = asset_classes.get(data.pop("asset_class_name"))
         data["asset_class_id"] = ac.id if ac else None
 
         # Convert date strings

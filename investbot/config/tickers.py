@@ -3,7 +3,7 @@ NIFTY50 ticker list and metadata for seeding the database.
 Tickers use yfinance format (.NS suffix for NSE).
 Sector/industry data is approximate — will be refined from yfinance info.
 
-Last updated: April 2026
+Last updated: October 2026
 """
 
 NIFTY50_TICKERS = [
@@ -31,7 +31,7 @@ NIFTY50_TICKERS = [
     ("NTPC.NS",         "NTPC",                        "Energy",           "Power Generation"),
     ("POWERGRID.NS",    "Power Grid Corp",             "Energy",           "Power Transmission"),
     ("NESTLEIND.NS",    "Nestle India",                "FMCG",             "Food Products"),
-    ("TATAMOTORS.NS",   "Tata Motors",                 "Automobile",       "Auto Manufacturers"),
+    ("TMPV.NS",         "Tata Motors Passenger Vehicles", "Automobile",    "Auto Manufacturers"),
     ("BAJAJFINSV.NS",   "Bajaj Finserv",               "Financial",        "Financial Services"),
     ("M&M.NS",          "Mahindra & Mahindra",         "Automobile",       "Auto Manufacturers"),
     ("ONGC.NS",         "ONGC",                        "Energy",           "Oil & Gas Exploration"),
@@ -60,6 +60,14 @@ NIFTY50_TICKERS = [
     ("SHRIRAMFIN.NS",   "Shriram Finance",             "Financial",        "NBFC"),
     ("BEL.NS",          "Bharat Electronics",          "Industrials",      "Defence Electronics"),
     ("TRENT.NS",        "Trent",                       "Consumer",         "Retail"),
+]
+
+# Tickers no longer listed under this symbol. The seed marks existing rows
+# is_active=False and keeps their price history. Never delete these rows.
+#   TATAMOTORS.NS: renamed TMPV.NS after the Oct 2025 demerger. The CV arm
+#   listed as TMCV.NS on 2025-11-12 and was excluded from NIFTY50 on 2025-11-17.
+RETIRED_TICKERS = [
+    "TATAMOTORS.NS",
 ]
 
 # Crypto tickers for future Phase (schema seeded now, data later)
