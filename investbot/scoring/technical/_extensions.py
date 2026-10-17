@@ -380,7 +380,7 @@ def returns(df: pd.DataFrame) -> dict[str, Any]:
       2. Performance dashboards need cumulative return as a baseline.
     """
     close = df["close"]
-    pct   = close.pct_change()
+    pct   = close.pct_change(fill_method=None)
     logr  = np.log(close / close.shift(1))
 
     return {

@@ -162,3 +162,35 @@ def test_nan_close_on_latest_bar_breaks_latest_coverage(ohlcv, full):
     assert bad_filled < MIN_EXPECTED_INDICATORS
     for col in STATEFUL_COLUMNS:
         assert np.isnan(out[col].iloc[-1])
+
+
+def test_returns_fill_method_none_unchanged_on_gap_free_data(ohlcv):
+    """fill_method=None must not change any return column when close has no gaps."""
+    from investbot.scoring.technical._extensions import returns
+
+    out = returns(ohlcv)
+    close = ohlcv["close"]
+    legacy_pct = close / close.shift(1) - 1.0  # what the old ffill default gave with no NaNs
+    np.testing.assert_allclose(out["PCTRET_1"], legacy_pct, rtol=1e-12, equal_nan=True)
+    np.testing.assert_allclose(
+        out["CUMPCTRET_1"], (1.0 + legacy_pct).cumprod() - 1.0, rtol=1e-12, equal_nan=True
+    )
+
+
+def test_returns_nan_close_not_forward_filled(ohlcv):
+    """A NaN close yields NaN returns at that bar and the next, not a masked 0."""
+    from investbot.scoring.technical._extensions import returns
+
+    df = _with_nan_close(ohlcv, 300)
+    pct = pd.Series(returns(df)["PCTRET_1"])
+    assert np.isnan(pct.iloc[300]) and np.isnan(pct.iloc[301])
+    assert np.isfinite(pct.iloc[302])
+
+
+@pytest.mark.parametrize("cut", [100, 350])
+def test_returns_truncation_invariance(ohlcv, cut):
+    from investbot.scoring.technical._extensions import returns
+
+    full_out = pd.DataFrame(returns(ohlcv))
+    trunc_out = pd.DataFrame(returns(ohlcv.iloc[:cut]))
+    pd.testing.assert_frame_equal(trunc_out, full_out.iloc[:cut])
