@@ -101,3 +101,64 @@ def test_no_lookahead_truncation_invariance(ohlcv, full, cut):
             offenders.append(f"{col}: truncated={a!r} full={b!r}")
 
     assert not offenders, "lookahead suspected in:\n  " + "\n  ".join(offenders)
+
+
+# ──────────────────────────────────────────────────────────
+# NaN close propagation
+#
+# Compute functions must NOT dropna() or patch NaN (warmup NaNs are a contract),
+# so a NaN close flows straight through. These tests document how far it
+# spreads. That is why incomplete OHLC rows are rejected at ingestion
+# (investbot/data/quality.py) and never reach this layer.
+# ──────────────────────────────────────────────────────────
+
+# Indicators whose TA-Lib state is carried bar to bar: one NaN input poisons
+# every later bar, not just the next `window` bars.
+STATEFUL_COLUMNS = ["SMA_20", "EMA_20", "MACD_12_26_9", "BBM_20_2.0"]
+
+
+def _with_nan_close(ohlcv: pd.DataFrame, pos: int) -> pd.DataFrame:
+    bad = ohlcv.copy()
+    bad.iloc[pos, bad.columns.get_loc("close")] = np.nan
+    return bad
+
+
+def test_mid_series_nan_close_propagation(ohlcv, full):
+    pos = 400
+    out = add_all_indicators(_with_nan_close(ohlcv, pos))
+
+    # The compute layer neither drops nor repairs rows.
+    assert len(out) == len(ohlcv)
+    assert np.isnan(out["close"].iloc[pos])
+
+    # Nothing before the bad bar changes (no backward contamination).
+    before_out, before_ref = _numeric(out).iloc[:pos], _numeric(full).iloc[:pos]
+    np.testing.assert_allclose(
+        before_out.to_numpy(), before_ref.to_numpy(), rtol=1e-6, atol=1e-8, equal_nan=True
+    )
+
+    # Stateful indicators never recover: NaN from the bad bar to the end.
+    for col in STATEFUL_COLUMNS:
+        assert full[col].iloc[pos:].notna().all(), f"{col}: clean run should be populated"
+        assert out[col].iloc[pos:].isna().all(), f"{col}: expected permanent NaN after bad bar"
+
+    # Worse than NaN: some columns stay finite but wrong. RSI is 0.0 here, which
+    # a scorer would read as "maximally oversold".
+    rsi_out, rsi_ref = out["RSI_14"].iloc[pos:], full["RSI_14"].iloc[pos:]
+    assert rsi_out.notna().all()
+    assert (rsi_out - rsi_ref).abs().max() > 1.0
+
+
+def test_nan_close_on_latest_bar_breaks_latest_coverage(ohlcv, full):
+    """The production symptom: a NaN close on the newest bar guts the latest-bar score inputs."""
+    last = len(ohlcv) - 1
+    out = add_all_indicators(_with_nan_close(ohlcv, last))
+
+    cols = list_indicator_columns(out)
+    clean_filled = int(full[cols].iloc[-1].notna().sum())
+    bad_filled = int(out[cols].iloc[-1].notna().sum())
+
+    assert clean_filled >= MIN_EXPECTED_INDICATORS
+    assert bad_filled < MIN_EXPECTED_INDICATORS
+    for col in STATEFUL_COLUMNS:
+        assert np.isnan(out[col].iloc[-1])

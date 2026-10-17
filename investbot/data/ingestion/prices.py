@@ -17,6 +17,7 @@ from investbot.config.settings import (
     MAX_RETRIES, RETRY_DELAY_SECONDS,
 )
 from investbot.data.models import Asset, PriceDaily, PriceIntraday
+from investbot.data.quality import validate_price_row
 
 logger = logging.getLogger(__name__)
 
@@ -81,27 +82,31 @@ def ingest_daily_prices(session: Session, asset: Asset):
     )
 
     rows_added = 0
+    rejected: list[tuple[date, str]] = []
     for idx, row in df.iterrows():
         row_date = idx.date() if hasattr(idx, 'date') else idx
 
         if row_date in existing_dates:
             continue
 
-        try:
-            session.add(PriceDaily(
-                asset_id=asset.id,
-                date=row_date,
-                open=_safe_float(row.get("Open")),
-                high=_safe_float(row.get("High")),
-                low=_safe_float(row.get("Low")),
-                close=_safe_float(row.get("Close")),
-                adj_close=_safe_float(row.get("Adj Close")),
-                volume=_safe_int(row.get("Volume")),
-            ))
-            rows_added += 1
-        except Exception as e:
-            logger.warning(f"Skipping row {row_date} for {ticker}: {e}")
+        o, h, l, c = (_safe_float(row.get(k)) for k in ("Open", "High", "Low", "Close"))
+        volume = _safe_int(row.get("Volume"))
+        reason = validate_price_row(o, h, l, c, volume, daily=True)
+        if reason:
+            # Not stored, so the next ingest run fetches this date again.
+            rejected.append((row_date, reason))
+            continue
 
+        session.add(PriceDaily(
+            asset_id=asset.id,
+            date=row_date,
+            open=o, high=h, low=l, close=c,
+            adj_close=_safe_float(row.get("Adj Close")),
+            volume=volume,
+        ))
+        rows_added += 1
+
+    _log_rejected(ticker, "daily", rejected)
     if rows_added > 0:
         session.commit()
     logger.info(f"{ticker}: added {rows_added} daily price rows")
@@ -139,6 +144,7 @@ def ingest_intraday_prices(session: Session, asset: Asset):
     )
 
     rows_added = 0
+    rejected: list[tuple[datetime, str]] = []
     for idx, row in df.iterrows():
         ts = idx.to_pydatetime() if hasattr(idx, 'to_pydatetime') else idx
 
@@ -149,21 +155,23 @@ def ingest_intraday_prices(session: Session, asset: Asset):
         if ts in existing_ts:
             continue
 
-        try:
-            session.add(PriceIntraday(
-                asset_id=asset.id,
-                timestamp=ts,
-                interval=INTRADAY_INTERVAL,
-                open=_safe_float(row.get("Open")),
-                high=_safe_float(row.get("High")),
-                low=_safe_float(row.get("Low")),
-                close=_safe_float(row.get("Close")),
-                volume=_safe_int(row.get("Volume")),
-            ))
-            rows_added += 1
-        except Exception as e:
-            logger.warning(f"Skipping intraday row {ts} for {ticker}: {e}")
+        o, h, l, c = (_safe_float(row.get(k)) for k in ("Open", "High", "Low", "Close"))
+        volume = _safe_int(row.get("Volume"))
+        reason = validate_price_row(o, h, l, c, volume, daily=False)
+        if reason:
+            rejected.append((ts, reason))
+            continue
 
+        session.add(PriceIntraday(
+            asset_id=asset.id,
+            timestamp=ts,
+            interval=INTRADAY_INTERVAL,
+            open=o, high=h, low=l, close=c,
+            volume=volume,
+        ))
+        rows_added += 1
+
+    _log_rejected(ticker, INTRADAY_INTERVAL, rejected)
     if rows_added > 0:
         session.commit()
     logger.info(f"{ticker}: added {rows_added} intraday price rows")
@@ -223,6 +231,20 @@ def detect_gaps(session: Session, asset: Asset, max_gap_days: int = 5) -> list[t
 
 
 # ── Helpers ───────────────────────────────────────────────
+
+def _log_rejected(ticker: str, label: str, rejected: list[tuple]) -> None:
+    """One warning per asset: counts by reason plus the first few timestamps."""
+    if not rejected:
+        return
+    by_reason: dict[str, int] = {}
+    for _, reason in rejected:
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+    sample = ", ".join(str(when) for when, _ in rejected[:5])
+    more = f" (+{len(rejected) - 5} more)" if len(rejected) > 5 else ""
+    logger.warning(
+        f"{ticker}: rejected {len(rejected)} {label} bar(s) {by_reason}: {sample}{more}"
+    )
+
 
 def _safe_float(val) -> float | None:
     """Convert to float, returning None for NaN/None."""

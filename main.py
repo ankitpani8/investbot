@@ -7,6 +7,8 @@ Usage:
     python main.py run        # Start scheduler (background jobs)
     python main.py status     # Show database statistics
     python main.py gaps       # Detect price data gaps
+    python main.py dq         # Audit stored price rows (exit 1 if any are bad)
+    python main.py dq --purge # ...and delete the bad rows (next ingest re-fetches them)
 """
 import sys
 import logging
@@ -169,6 +171,45 @@ def cmd_gaps():
         session.close()
 
 
+def cmd_dq():
+    """Audit stored price rows against the ingestion rules; optionally delete the bad ones."""
+    from collections import Counter, defaultdict
+    from investbot.data.quality import audit_prices, purge_bad_rows
+
+    purge = "--purge" in sys.argv[2:]
+    session = SessionLocal()
+    try:
+        bad = audit_prices(session)
+        if not bad:
+            print("\n  Data quality OK: no bad price rows.\n")
+            return
+
+        by_key = defaultdict(list)
+        for b in bad:
+            by_key[(b.table, b.ticker)].append(b)
+
+        print(f"\n  {len(bad)} bad price row(s) in {len(by_key)} (table, asset) group(s):")
+        for (table, ticker), rows in sorted(by_key.items()):
+            reasons = dict(Counter(r.reason for r in rows))
+            first, last = rows[0].when, rows[-1].when
+            print(f"    {table:<15s} {ticker:<16s} {len(rows):>3}  {reasons}  {first} → {last}")
+
+        print("\n  By table and reason:")
+        for (table, reason), n in sorted(Counter((b.table, b.reason) for b in bad).items()):
+            dates = sorted({str(b.when) for b in bad if b.table == table and b.reason == reason})
+            shown = ", ".join(dates[:8]) + (f" (+{len(dates) - 8} more)" if len(dates) > 8 else "")
+            print(f"    {table:<15s} {reason:<20s} {n:>4} row(s) on {len(dates)} date(s): {shown}")
+
+        if purge:
+            deleted = purge_bad_rows(session, bad)
+            print(f"\n  Purged {deleted} row(s). Run `python main.py ingest` to re-fetch them.\n")
+            return
+        print("\n  Re-run with --purge to delete these rows.\n")
+        sys.exit(1)
+    finally:
+        session.close()
+
+
 # ── CLI dispatch ──────────────────────────────────────────
 COMMANDS = {
     "setup": cmd_setup,
@@ -176,6 +217,7 @@ COMMANDS = {
     "run": cmd_run,
     "status": cmd_status,
     "gaps": cmd_gaps,
+    "dq": cmd_dq,
 }
 
 if __name__ == "__main__":
