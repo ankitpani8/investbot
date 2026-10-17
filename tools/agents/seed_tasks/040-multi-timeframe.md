@@ -1,6 +1,7 @@
 ---
 id: 040-multi-timeframe
 depends: [030-regime]
+model: opus
 ---
 # multi_timeframe.py: 15m / 1h / daily alignment without lookahead
 

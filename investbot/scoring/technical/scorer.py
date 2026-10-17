@@ -357,7 +357,7 @@ def _fingerprint(bars: pd.DataFrame, context: pd.DataFrame | None) -> str:
     for df in (bars, context):
         if df is None:
             continue
-        h.update(df.index.asi8.tobytes())
+        h.update(df.index.as_unit("ns").asi8.tobytes())
         h.update(np.ascontiguousarray(df[list(OHLCV)].to_numpy(np.float64)).tobytes())
     return h.hexdigest()
 

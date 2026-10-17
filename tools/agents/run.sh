@@ -30,7 +30,15 @@ Q="$AG/queue"; A="$AG/active"; D="$AG/done"; B="$AG/blocked"; L="$AG/logs"; WT="
 LOCKS="$AG/locks"
 WORKERS=2
 MAX_TASKS=100
-MODEL="${AGENT_MODEL:-opus}"
+# Model routing. Workers burn ~95% of tokens, so they default to Sonnet; the planner runs
+# rarely and its task specs steer every worker, so it gets Opus. A task file can override
+# with `model:` / `effort:` header lines (used for the maths-heavy tasks).
+WORKER_MODEL="${WORKER_MODEL:-sonnet}"
+WORKER_EFFORT="${WORKER_EFFORT:-high}"
+PLANNER_MODEL="${PLANNER_MODEL:-opus}"
+PLANNER_EFFORT="${PLANNER_EFFORT:-high}"
+HAS_EFFORT=0
+claude --help 2>/dev/null | grep -q -- '--effort' && HAS_EFFORT=1
 AGENT_TIMEOUT="${AGENT_TIMEOUT:-3h}"
 DB_MAIN="$HOME/investbot_data/investbot.db"
 PY="$REPO/.venv/bin/python"
@@ -78,15 +86,16 @@ agent_env() {   # run a command with the agent sandbox environment
 }
 
 # Returns 0 = finished, 2 = fatal (auth etc.). Sleeps through usage limits.
-run_claude() {
-  local wt=$1 prompt=$2 logf=$3 cont=0
+run_claude() {   # wt prompt logf model effort
+  local wt=$1 prompt=$2 logf=$3 model=$4 effort=$5 cont=0
   while :; do
     [ -f "$AG/STOP" ] && return 2
-    local args=(-p --model "$MODEL" --dangerously-skip-permissions)
+    local args=(-p --model "$model" --dangerously-skip-permissions)
+    [ $HAS_EFFORT = 1 ] && [ -n "$effort" ] && args+=(--effort "$effort")
     [ $cont = 1 ] && args+=(--continue)
     local msg="$prompt"
     [ $cont = 1 ] && msg="You were interrupted by a usage limit. Continue the task from where you left off. Re-read your previous messages and the git log on this branch first."
-    local start; start=$(wc -l < "$logf" 2>/dev/null || echo 0)
+    local start=0; [ -f "$logf" ] && start=$(wc -l < "$logf")
     ( cd "$wt" && agent_env "$wt" timeout "$AGENT_TIMEOUT" claude "${args[@]}" "$msg" ) >>"$logf" 2>&1
     local rc=$?
     local out; out=$(tail -n +"$((start+1))" "$logf")
@@ -154,7 +163,12 @@ run_task() {
 $(awk 'NR==1 && /^---$/ {h=1; next} h && /^---$/ {h=0; next} !h' "$task")"
 
   echo "===== $(date '+%F %T') $id =====" >>"$logf"
-  run_claude "$wt" "$prompt" "$logf" || { mv "$task" "$Q"/; log "Stopped during $id (requeued)"; return; }
+  local model effort
+  model=$(sed -n 's/^model:[[:space:]]*//p' "$task" | head -1); model=${model:-$WORKER_MODEL}
+  effort=$(sed -n 's/^effort:[[:space:]]*//p' "$task" | head -1); effort=${effort:-$WORKER_EFFORT}
+  echo "model=$model effort=$effort" >>"$logf"
+  log "  $id → $model/$effort"
+  run_claude "$wt" "$prompt" "$logf" "$model" "$effort" || { mv "$task" "$Q"/; log "Stopped during $id (requeued)"; return; }
 
   if tail -50 "$logf" | grep -q 'RESULT: BLOCKED'; then
     block "$task" "$(tail -50 "$logf" | grep 'RESULT: BLOCKED' | tail -1)" "$wt" "$br"; return
@@ -174,6 +188,9 @@ plan() {   # refill the queue when nothing is claimable
   (
     flock -n 7 || exit 0
     [ -n "$(ls "$Q"/*.md 2>/dev/null)" ] && exit 0
+    # Planner already said "nothing left" and no task has finished since: don't re-ask.
+    local newest; newest=$(ls -t "$D"/*.md "$B"/*.md 2>/dev/null | head -1)
+    if [ -f "$AG/PLANNER_EMPTY" ] && { [ -z "$newest" ] || [ "$AG/PLANNER_EMPTY" -nt "$newest" ]; }; then exit 0; fi
     local pwt="$WT/_planner"
     git -C "$REPO" fetch -q origin
     git -C "$REPO" worktree remove --force "$pwt" 2>/dev/null
@@ -182,9 +199,11 @@ plan() {   # refill the queue when nothing is claimable
     local prompt
     prompt="$(sed -e "s|{{QUEUE}}|$Q|g" -e "s|{{EXISTING}}|$existing|g" "$REPO/tools/agents/prompts/planner.md")"
     WID=planner log "Planning new tasks"
-    run_claude "$pwt" "$prompt" "$L/planner.log"
+    run_claude "$pwt" "$prompt" "$L/planner.log" "$PLANNER_MODEL" "$PLANNER_EFFORT"
     git -C "$REPO" worktree remove --force "$pwt" 2>/dev/null
-    WID=planner log "Planner queued $(ls "$Q"/*.md 2>/dev/null | wc -l) task(s)"
+    local nq; nq=$(ls "$Q"/*.md 2>/dev/null | wc -l)
+    if [ "$nq" = 0 ]; then touch "$AG/PLANNER_EMPTY"; else rm -f "$AG/PLANNER_EMPTY"; fi
+    WID=planner log "Planner queued $nq task(s)"
   ) 7>"$LOCKS/plan.lock"
 }
 
@@ -201,7 +220,12 @@ worker() {
     fi
     if [ -z "$task" ]; then
       idle=$((idle+1))
-      if [ $idle -ge 10 ] && [ -z "$(ls "$A"/*.md 2>/dev/null)" ]; then log "Nothing claimable; exiting"; break; fi
+      # Exit only when the planner has confirmed there's nothing left, no task is running,
+      # and the planner isn't mid-run (another worker may be planning right now).
+      if [ $idle -ge 3 ] && [ -f "$AG/PLANNER_EMPTY" ] && [ -z "$(ls "$A"/*.md 2>/dev/null)" ] \
+         && flock -n "$LOCKS/plan.lock" true; then
+        log "Queue empty and planner has nothing left; exiting"; break
+      fi
       sleep 120; continue
     fi
     idle=0
@@ -209,8 +233,13 @@ worker() {
   done
 }
 
-log "Runner start: repo=$REPO workers=$WORKERS model=$MODEL max_tasks=$MAX_TASKS"
-rm -f "$AG/STOP"
+log "Runner start: repo=$REPO workers=$WORKERS worker=$WORKER_MODEL/$WORKER_EFFORT planner=$PLANNER_MODEL/$PLANNER_EFFORT effort_flag=$HAS_EFFORT max_tasks=$MAX_TASKS"
+if [ -f "$AG/runner.pid" ] && kill -0 "$(cat "$AG/runner.pid")" 2>/dev/null; then
+  echo "A runner is already running (pid $(cat "$AG/runner.pid")). Stop it with: touch $AG/STOP"; exit 1
+fi
+echo $$ > "$AG/runner.pid"
+trap 'rm -f "$AG/runner.pid"' EXIT
+rm -f "$AG/STOP" "$AG/PLANNER_EMPTY"
 for i in $(seq 1 "$WORKERS"); do worker "$i" & sleep 20; done
 wait
 log "Runner finished. done=$(ls "$D" | wc -l) blocked=$(ls "$B" | wc -l) queued=$(ls "$Q" | wc -l)"

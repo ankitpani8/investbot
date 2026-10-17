@@ -2,7 +2,7 @@
 sqlalchemy>=2.0
 yfinance>=0.2.40
 apscheduler>=3.10,<4
-pandas>=2.2
+pandas>=2.2,<3  # pandas 3 changes datetime resolution; unpin after the platform task
 numpy>=1.26
 python-dotenv>=1.0
 

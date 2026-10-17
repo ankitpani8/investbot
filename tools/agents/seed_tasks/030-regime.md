@@ -1,6 +1,7 @@
 ---
 id: 030-regime
 depends: []
+model: opus
 ---
 # regime.py: Hurst, Lyapunov, regime label and confidence
 

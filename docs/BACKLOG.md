@@ -56,3 +56,6 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 
 ## Later phases
 See `CLAUDE.md` → Build order and the master plan.
+
+## Platform
+- [ ] Move the venv to Python 3.12 and pandas 3. Run the full suite under pandas 3 first: the `.asi8` mixed-unit bug in multi_timeframe (fixed 2026-10-17) showed pandas 3 can silently break timestamp alignment. Then remove the `pandas<3` pin. (pandas-3)

@@ -1,6 +1,7 @@
 ---
 id: 050-confluence
 depends: [010-candle-patterns, 020-support-resistance, 030-regime, 040-multi-timeframe]
+model: opus
 ---
 # confluence.py: group-normalised rule-based technical score
 

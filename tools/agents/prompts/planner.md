@@ -9,6 +9,7 @@ Write 1–4 new task files into the directory {{QUEUE}}. Write only there, and c
 ---
 id: <NNN>-<slug>
 depends: [<ids that must be merged first>]
+model: opus   # ONLY for maths-heavy or lookahead-sensitive work (numerical methods, statistics, portfolio optimisation, backtest engine). Omit this line otherwise.
 ---
 # <title>
 <Goal: 2–4 sentences.>

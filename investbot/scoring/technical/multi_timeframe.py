@@ -210,7 +210,11 @@ def align_higher_timeframe(
         if not frame.index.is_monotonic_increasing:
             raise ValueError(f"{name} index must be monotonically increasing")
 
-    pos = np.searchsorted(htf_df.index.asi8, base_df.index.asi8, side="right") - 1
+    # Compare in one explicit unit: pandas 3 indexes can carry different resolutions
+    # (us vs ns), and raw .asi8 from mixed units silently mis-aligns (= lookahead).
+    pos = np.searchsorted(
+        htf_df.index.as_unit("ns").asi8, base_df.index.as_unit("ns").asi8, side="right"
+    ) - 1
     seen = pos >= 0
     take = np.where(seen, pos, 0)
     cols: dict[str, np.ndarray] = {}
