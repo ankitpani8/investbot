@@ -9,6 +9,8 @@ Usage:
     python main.py gaps       # Detect price data gaps
     python main.py dq         # Audit stored price rows (exit 1 if any are bad)
     python main.py dq --purge # ...and delete the bad rows (next ingest re-fetches them)
+    python main.py score [TICKER] [--timeframe 1d|15m] [--as-of YYYY-MM-DD] [--no-cache]
+                              # Technical scores, ranked (one asset in detail with TICKER)
 """
 import sys
 import logging
@@ -210,6 +212,69 @@ def cmd_dq():
         session.close()
 
 
+def cmd_score():
+    """Score one asset (detail) or every active stock (ranked table) and persist the results."""
+    import pandas as pd
+    from investbot.scoring.technical.scorer import score, score_universe
+
+    args = sys.argv[2:]
+    opts = {"--timeframe": "1d", "--as-of": None}
+    positional = []
+    i = 0
+    while i < len(args):
+        if args[i] in opts and i + 1 < len(args):
+            opts[args[i]] = args[i + 1]
+            i += 2
+        elif args[i] == "--no-cache":
+            opts["--no-cache"] = True
+            i += 1
+        else:
+            positional.append(args[i])
+            i += 1
+    timeframe = opts["--timeframe"]
+    as_of = datetime.strptime(opts["--as-of"], "%Y-%m-%d").date() if opts["--as-of"] else None
+    use_cache = not opts.get("--no-cache", False)
+
+    init_db()   # creates technical_scores on an existing DB
+    logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
+    session = SessionLocal()
+    try:
+        if positional:
+            ticker = positional[0]
+            if session.query(Asset).filter_by(ticker=ticker).first() is None and "." not in ticker:
+                ticker += ".NS"
+            s = score(ticker, timeframe, as_of, session=session, use_cache=use_cache)
+            print(f"\n  {s.ticker} [{s.timeframe}] bar {s.as_of}  status={s.status}"
+                  f"{'  (cached)' if s.cached else ''}{'  STALE' if s.is_stale else ''}")
+            if s.message:
+                print(f"  {s.message}")
+            print(f"  TECH_SCORE {s.tech_score:+.3f}   regime {s.regime} "
+                  f"(confidence {s.regime_confidence:.2f})")
+            print(f"  bars {s.bars_available}  warmup ok {s.warmup_satisfied}  "
+                  f"staleness {s.staleness_days} business day(s)")
+            print("  families: " + "  ".join(f"{k} {v:+.2f}" for k, v in s.family_scores.items()))
+            for r in s.reasons:
+                print(f"    - {r}")
+            print()
+            return
+
+        df = score_universe("stock", timeframe, as_of, session=session, use_cache=use_cache)
+        cols = ["rank", "ticker", "as_of", "tech_score", "score_trend", "score_momentum",
+                "score_volume", "score_sr", "score_mtf", "regime", "regime_confidence",
+                "status", "is_stale", "cached", "top_reason"]
+        out = df[cols].copy()
+        width = 10 if timeframe == "1d" else 16
+        out["as_of"] = out["as_of"].map(lambda t: "" if t is None or pd.isna(t) else str(t)[:width])
+        with pd.option_context("display.width", 250, "display.max_rows", None,
+                               "display.max_colwidth", 60, "display.float_format", "{:+.3f}".format):
+            print(out.to_string(index=False))
+        n_ok = int((df["status"] == "ok").sum())
+        print(f"\n  {n_ok}/{len(df)} scored, {int(df['cached'].sum())} from cache, "
+              f"{int(df['is_stale'].sum())} stale.\n")
+    finally:
+        session.close()
+
+
 # ── CLI dispatch ──────────────────────────────────────────
 COMMANDS = {
     "setup": cmd_setup,
@@ -218,6 +283,7 @@ COMMANDS = {
     "status": cmd_status,
     "gaps": cmd_gaps,
     "dq": cmd_dq,
+    "score": cmd_score,
 }
 
 if __name__ == "__main__":

@@ -292,6 +292,42 @@ class Score(Base):
     signal_reasons = Column(Text)                               # JSON
 
 
+class TechnicalScoreRecord(Base):
+    """One technical score per (asset, timeframe, bar), written by scoring/technical/scorer.py.
+
+    Not in master plan v3: §4.5 only has the combined `scores` table (0-100
+    sub-scores). This keeps the full technical breakdown on its native [-1, 1]
+    scale; the combined layer maps it into `scores.technical_score`.
+    """
+    __tablename__ = "technical_scores"
+    __table_args__ = (UniqueConstraint("asset_id", "timeframe", "timestamp"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    timeframe = Column(String, nullable=False)                  # '1d', '15m'
+    timestamp = Column(DateTime, nullable=False)                # scored bar (daily: date 00:00; intraday: bar open)
+    tech_score = Column(Float)                                  # -1 to +1, NULL during warmup
+    score_trend = Column(Float)
+    score_momentum = Column(Float)
+    score_volatility = Column(Float)
+    score_volume = Column(Float)
+    score_pattern = Column(Float)
+    score_sr = Column(Float)
+    score_mtf = Column(Float)
+    regime = Column(String)                                     # 'trend', 'range', 'chaotic'
+    regime_confidence = Column(Float)                           # 0-1
+    signal_reasons = Column(Text)                               # JSON list of str
+    # Data quality
+    status = Column(String, nullable=False)                     # 'ok', 'warmup', 'insufficient_data', 'error'
+    bars_available = Column(Integer)
+    warmup_satisfied = Column(Boolean)
+    staleness_days = Column(Integer)                            # business days from bar to reference time, at compute time
+    # Cache
+    input_hash = Column(String)                                 # fingerprint of the OHLCV window scored
+    scorer_version = Column(String)
+    computed_at = Column(DateTime)
+
+
 # ──────────────────────────────────────────────────────────
 # §4.6 — Sentiment
 # ──────────────────────────────────────────────────────────
