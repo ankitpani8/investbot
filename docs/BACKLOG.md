@@ -23,7 +23,10 @@ Status: `[ ]` open Â· `[~]` in progress (put the agent branch name next to it) Â
 
 ## Phase 2: technical scoring
 - [x] Indicator layer (TA-Lib core + extensions): 112 columns, smoke-tested
-- [ ] `candle_patterns.py`
+- [x] `candle_patterns.py`: all 61 TA-Lib CDL* patterns, raw + normalised, bull/bear counts, CDL_NET_SCORE (`agent/010-candle-patterns`)
+- [ ] `confluence.py` must de-duplicate overlapping candle patterns. DOJI, LONGLEGGEDDOJI, RICKSHAWMAN, HIGHWAVE and SPINNINGTOP fire together, so `CDL_BULL_COUNT`/`CDL_BEAR_COUNT` overcount one candle shape.
+- [ ] TA-Lib signs CDL3LINESTRIKE by the three prior candles, so the classic bullish strike (three red, then a big green) comes out -100. Decide whether `scorer.py`/`confluence.py` flips it or leaves TA-Lib's convention.
+- [ ] Candle patterns are price-only. Consider volume confirmation (e.g. relative volume on the pattern bar) in `confluence.py`.
 - [ ] `support_resistance.py` (swing pivots, volume profile, Fibonacci)
 - [ ] `regime.py` (Hurst, Lyapunov, regime_confidence)
 - [ ] `multi_timeframe.py`
