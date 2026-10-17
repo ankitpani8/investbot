@@ -12,7 +12,9 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 ## Data quality
 - [x] Reject incomplete OHLC rows at ingestion, add `python main.py dq [--purge]`, clean existing rows (`agent/fix-daily-nan`)
 - [ ] Backfill the 158 purged bars with one `python main.py ingest` run (rows 2026-10-16 plus 108 zero-volume placeholders on 7 dates). Needs a human to trigger it, since agents must not hit yfinance. Placeholders yfinance still returns are rejected again, so those days stay missing.
-- [ ] Stale partial bars: ingestion skips dates that already exist, so a bar stored with a valid close mid-session is never refreshed. Options: re-fetch and upsert the last N days on every run, or skip today's bar until the session is closed. Not decided.
+- [x] Stale partial bars: upsert a trailing refresh window (5 daily sessions, 2 intraday trading days), never store today's daily bar before 16:00 IST, drop the forming 15m candle (`agent/000-ingest-refresh-window`)
+- [ ] Daily ingestion still downloads `DAILY_PERIOD` (5y) on every run even though only the trailing window can change. Fetch a short period when the asset already has history.
+- [ ] `ingest_all_prices` returns rows written (inserted + updated); `cmd_ingest` labels them "rows". Surface inserted/updated/rejected totals in the summary.
 - [ ] Run `dq` after the daily price job in the scheduler and surface failures (it exits 1 on bad rows).
 - [ ] `scripts/smoke_indicators.py` picks the asset with the most rows, so the asset under test changes when rows are purged (RELIANCE → ITC). Take an optional ticker argument and default to a fixed one.
 - [x] `_extensions.py` `pct_change(fill_method=None)`: a NaN close is no longer masked in the return columns (`agent/005-housekeeping`)
