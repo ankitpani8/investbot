@@ -37,7 +37,10 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] `support_resistance.py` follow-ups: the volume profile is ~60% of its runtime (~0.3 s/asset daily). If `scorer.py` recomputes every asset each run, cache it or update the profile incrementally for the newest bar only.
 - [ ] `support_resistance.py` follow-up: S/R levels come only from price pivots. The master plan calls volume-weighted zones the *primary* S/R method. Decide in `confluence.py` how `SR_*` and `VP_*` combine (e.g. boost an S/R level that sits inside the value area or near the POC).
 - [ ] `regime.py` (Hurst, Lyapunov, regime_confidence)
-- [ ] `multi_timeframe.py`
+- [x] `multi_timeframe.py`: session-aware 15m→1h resampling (close-time labels), HTF alignment with previous-session daily values, MTF_TREND_ALIGN / MTF_MOMENTUM_ALIGN / MTF_REGIME_1D (`agent/040-multi-timeframe`)
+- [ ] `multi_timeframe.py` follow-up: the DB has only ~60 sessions of 15m data (yfinance caps 15m history at 60 days), so 1h EMA_50 warmup eats ~7 sessions and there is too little intraday history to backtest MTF signals. Consider storing 15m bars continuously from now on and/or ingesting yfinance 1h bars (730-day cap) as a separate interval.
+- [ ] `multi_timeframe.py` follow-up: `scorer.py` should call `mtf_alignment` only on recent 15m history plus enough daily bars for regime warmup (~251), one asset at a time (8 GB RAM).
+- [ ] `multi_timeframe.py` follow-up: holidays and special sessions (e.g. Muhurat trading, an evening session outside 09:15–15:30) make `resample_ohlcv` raise on out-of-session bars. Decide whether to drop them or support per-date session bounds.
 - [ ] `confluence.py`
 - [ ] `scorer.py`: `score(ticker)`
 
