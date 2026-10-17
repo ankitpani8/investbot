@@ -32,6 +32,11 @@ Status: `[ ]` open Â· `[~]` in progress (put the agent branch name next to it) Â
 - [ ] Regime thresholds were hand-calibrated on in-sample NIFTY50 daily data (label shares ~47% range / 50% trend / 3% chaotic). Re-fit them, or at least sanity-check them, against forward returns once the backtest layer exists.
 - [ ] `LYAP_CHAOS` is calibrated for daily bars at `regime_window=100`. Intraday (15m/1h) bars need their own calibration before `multi_timeframe.py` uses regime on them.
 - [ ] HURST_100 still reads ~0.53 on a random walk (DFA small-sample bias). Consider a Monte-Carlo bias correction per window if the regime layer needs it.
+- [ ] `candle_patterns.py`
+- [x] `support_resistance.py` (swing pivots, volume profile, Fibonacci) (`agent/020-support-resistance`)
+- [ ] `support_resistance.py` follow-ups: the volume profile is ~60% of its runtime (~0.3 s/asset daily). If `scorer.py` recomputes every asset each run, cache it or update the profile incrementally for the newest bar only.
+- [ ] `support_resistance.py` follow-up: S/R levels come only from price pivots. The master plan calls volume-weighted zones the *primary* S/R method. Decide in `confluence.py` how `SR_*` and `VP_*` combine (e.g. boost an S/R level that sits inside the value area or near the POC).
+- [ ] `regime.py` (Hurst, Lyapunov, regime_confidence)
 - [ ] `multi_timeframe.py`
 - [ ] `confluence.py`
 - [ ] `scorer.py`: `score(ticker)`
