@@ -30,6 +30,12 @@ INTRADAY_INTERVAL = "15m"
 INTRADAY_PERIOD = "60d"
 DAILY_PERIOD = "5y"
 
+# Yahoo revises recent bars, and a bar fetched mid-session is partial. Every run
+# re-fetches and upserts this trailing window; older history stays insert-only.
+DAILY_REFRESH_SESSIONS = 5       # last N trading sessions in the fetched daily data
+INTRADAY_REFRESH_DAYS = 2        # last N trading days in the fetched intraday data
+DAILY_BAR_FINAL_AFTER = "16:00"  # IST; today's daily bar is not stored before this
+
 # ── Scheduler Intervals (minutes) ────────────────────────
 EQUITY_SCORING_INTERVAL_MIN = 30
 CRYPTO_SCORING_INTERVAL_MIN = 5
