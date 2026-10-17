@@ -3,3 +3,6 @@
 *.py text eol=lf
 *.db binary
 *.pdf binary
+docs/CHANGELOG.md merge=union
+docs/BACKLOG.md merge=union
+docs/DECISIONS_PENDING.md merge=union
