@@ -24,8 +24,8 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 ## Phase 2: technical scoring
 - [x] Indicator layer (TA-Lib core + extensions): 112 columns, smoke-tested
 - [x] `candle_patterns.py`: all 61 TA-Lib CDL* patterns, raw + normalised, bull/bear counts, CDL_NET_SCORE (`agent/010-candle-patterns`)
-- [ ] `confluence.py` must de-duplicate overlapping candle patterns. DOJI, LONGLEGGEDDOJI, RICKSHAWMAN, HIGHWAVE and SPINNINGTOP fire together, so `CDL_BULL_COUNT`/`CDL_BEAR_COUNT` overcount one candle shape.
-- [ ] TA-Lib signs CDL3LINESTRIKE by the three prior candles, so the classic bullish strike (three red, then a big green) comes out -100. Decide whether `scorer.py`/`confluence.py` flips it or leaves TA-Lib's convention.
+- [x] `confluence.py` must de-duplicate overlapping candle patterns. DOJI, LONGLEGGEDDOJI, RICKSHAWMAN, HIGHWAVE and SPINNINGTOP fire together, so `CDL_BULL_COUNT`/`CDL_BEAR_COUNT` overcount one candle shape. Done in `agent/050-confluence`: the CANDLES signal excludes `INDECISION_PATTERNS` (those five plus DRAGONFLYDOJI and GRAVESTONEDOJI, which TA-Lib only ever emits as +100).
+- [ ] TA-Lib signs CDL3LINESTRIKE by the three prior candles, so the classic bullish strike (three red, then a big green) comes out -100. Decide whether `scorer.py`/`confluence.py` flips it or leaves TA-Lib's convention. (`confluence.py` currently keeps TA-Lib's sign.)
 - [ ] Candle patterns are price-only. Consider volume confirmation (e.g. relative volume on the pattern bar) in `confluence.py`.
 - [ ] `support_resistance.py` (swing pivots, volume profile, Fibonacci)
 - [x] `regime.py`: rolling DFA Hurst, Rosenstein Lyapunov, realised vol, REGIME + smooth REGIME_CONFIDENCE (`agent/030-regime`)
@@ -41,7 +41,11 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] `multi_timeframe.py` follow-up: the DB has only ~60 sessions of 15m data (yfinance caps 15m history at 60 days), so 1h EMA_50 warmup eats ~7 sessions and there is too little intraday history to backtest MTF signals. Consider storing 15m bars continuously from now on and/or ingesting yfinance 1h bars (730-day cap) as a separate interval.
 - [ ] `multi_timeframe.py` follow-up: `scorer.py` should call `mtf_alignment` only on recent 15m history plus enough daily bars for regime warmup (~251), one asset at a time (8 GB RAM).
 - [ ] `multi_timeframe.py` follow-up: holidays and special sessions (e.g. Muhurat trading, an evening session outside 09:15–15:30) make `resample_ohlcv` raise on out-of-session bars. Decide whether to drop them or support per-date session bounds.
-- [ ] `confluence.py`
+- [x] `confluence.py`: 30 rule-based signals in 7 families, within-family mean, regime-blended family weights from `config/scoring_weights.py`, TECH_SCORE / TECH_SCORE_<FAMILY> / TECH_REASONS, explicit column→family contract (`agent/050-confluence`)
+- [ ] `confluence.py` follow-up: signal rules and family weights are hand-set. Calibrate against forward returns once the backtest layer exists (the ML layer is meant to replace `FAMILY_WEIGHTS`). One unscientific data point: on RELIANCE.NS daily, TECH_SCORE correlates 0.82 with the past 10-day return and about -0.02 with the next 10 days.
+- [ ] `confluence.py` follow-up: a signal's contribution is family weight / signals in the family, so each of the 2 S/R signals outweighs each of the 12 trend signals and S/R tends to top `TECH_REASONS`. Consider explaining at family level first (top family, then its top signal) once the dashboard shows reasons.
+- [ ] `confluence.py` follow-up: `scorer.py` must join the upstream outputs into one frame on the same index before calling `compute_confluence` (daily: indicators + candles + S/R + regime; intraday: plus MTF). The MTF family is NaN, and dropped from the weights, on daily-only frames.
+- [ ] `confluence.py` follow-up: `SR_DIST_*` and `VP_POS` are two equal signals in the S/R family. The volume-weighted combination the master plan wants (boost a level inside the value area or near the POC) is still open; see the S/R follow-up above.
 - [ ] `scorer.py`: `score(ticker)`
 
 ## Later phases
