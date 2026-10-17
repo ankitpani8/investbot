@@ -3,8 +3,10 @@
 Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) · `[x]` done
 
 ## Housekeeping
-- [ ] Replace TATAMOTORS.NS (delisted on Yahoo after the 2025 demerger) in `investbot/config/tickers.py`. Check the current NIFTY50 constituents and update the list.
-- [ ] Remove the duplicate `investbot/scoring/technical/smoke_indicators.py` (the canonical copy is in `scripts/`).
+- [x] Replace TATAMOTORS.NS with TMPV.NS; seed deactivates `RETIRED_TICKERS` without deleting history (`agent/005-housekeeping`)
+- [ ] Sync `NIFTY50_TICKERS` with the current index. NSE's 2026-09-15 release excludes WIPRO and includes DRREDDY (already listed). The list also has WIPRO twice. Check any other drift against the niftyindices.com constituent CSV, and move removed names to `RETIRED_TICKERS`.
+- [x] Remove the duplicate `investbot/scoring/technical/smoke_indicators.py` (`agent/005-housekeeping`)
+- [x] pytest promotes FutureWarning to error (`agent/005-housekeeping`)
 - [ ] Update `docs/investbot_master_plan_v3.md` to v4: TA-Lib instead of pandas-ta, institutional flow signals, the cross-asset-class allocation layer, the 21-day LODR lag.
 
 ## Data quality
@@ -13,7 +15,8 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] Stale partial bars: ingestion skips dates that already exist, so a bar stored with a valid close mid-session is never refreshed. Options: re-fetch and upsert the last N days on every run, or skip today's bar until the session is closed. Not decided.
 - [ ] Run `dq` after the daily price job in the scheduler and surface failures (it exits 1 on bad rows).
 - [ ] `scripts/smoke_indicators.py` picks the asset with the most rows, so the asset under test changes when rows are purged (RELIANCE → ITC). Take an optional ticker argument and default to a fixed one.
-- [ ] `_extensions.py` `close.pct_change()` forward-fills NaN by default (FutureWarning). Pass `fill_method=None` so a NaN close is not masked in the return columns.
+- [x] `_extensions.py` `pct_change(fill_method=None)`: a NaN close is no longer masked in the return columns (`agent/005-housekeeping`)
+- [ ] `CUMPCTRET_1` and `CUMLOGRET_1` use cumprod/cumsum, which skip NaN, so a single missing close silently drops one period from the cumulative return. Decide whether the cumulative columns should go NaN or carry on.
 - [ ] Add `dq` to the CLI list in `CLAUDE.md`.
 
 ## Phase 2: technical scoring
