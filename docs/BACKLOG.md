@@ -63,7 +63,7 @@ Status: `[ ]` open Â· `[~]` in progress (put the agent branch name next to it) Â
 - [ ] `scorer.py` follow-up: the combined layer should write `scores.technical_score` (0-100 in the plan) from `technical_scores.tech_score` ([-1, 1]); see the pending decision on the scale.
 - [x] `scorer.py` follow-up (daily part): `score_universe("stock", "1d")` runs after a clean dq audit in the post-close pipeline (`agent/210-scheduler-post-close-pipeline`)
 - [ ] `scorer.py` follow-up (15m part): score `"15m"` after the intraday job. Left out of 210 because the 15m history is too thin for MTF (see the MTF item).
-- [ ] Scheduler: `audit_prices` scans every stored row (all history, both tables), so one old bad intraday row blocks daily scoring until someone runs `main.py dq --purge`. Consider auditing only the rows touched by the run, or a daily-only gate.
+- [x] Scheduler: the dq gate covers only the daily bars inside each active stock's scoring lookback (`quality.scoring_window_start`, `audit_prices(tables=, asset_ids=, since=)`); an asset with a bad row there is excluded from scoring, the rest are scored. Older daily rows, all 15m rows and unadjusted splits are logged (WARNING / ERROR) without blocking (`agent/240-scheduler-dq-gate-scope`)
 - [ ] Scheduler: `run_post_close` has no alert channel beyond ERROR logs; add a notification when scoring is skipped.
 - [ ] `scorer.py` follow-up: staleness counts business days without an NSE holiday calendar, so a long holiday weekend can read 1 day staler than it is.
 - [ ] The scratch DB still has TATAMOTORS.NS active with no price rows (the seed's `RETIRED_TICKERS` deactivation has not run there, and TMPV.NS is absent). `main.py score` lists it as `no_data`. Check the real DB after the next `setup`.

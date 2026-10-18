@@ -12,11 +12,12 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date, datetime
 
 import pandas as pd
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from investbot.data.corporate_actions import load_actions
@@ -87,32 +88,78 @@ class BadRow:
     reason: str
 
 
-def audit_prices(session: Session) -> list[BadRow]:
-    """Run the ingestion rules over every stored price row. Read-only."""
+def audit_prices(
+    session: Session,
+    *,
+    tables: Collection[str] = ("price_daily", "price_intraday"),
+    asset_ids: Collection[int] | None = None,
+    since: dict[int, date] | None = None,
+) -> list[BadRow]:
+    """
+    Run the ingestion rules over stored price rows. Read-only.
+
+    The defaults audit every row of both tables. `tables` picks `price_daily`
+    and/or `price_intraday`; `asset_ids` restricts to those assets; `since[asset_id]`
+    restricts that asset's *daily* rows to `date >= since[asset_id]` (assets
+    missing from `since`, and intraday rows, are not restricted).
+    """
     tickers = dict(session.execute(select(Asset.id, Asset.ticker)).all())
     bad: list[BadRow] = []
 
-    daily = select(
-        PriceDaily.id, PriceDaily.asset_id, PriceDaily.date,
-        PriceDaily.open, PriceDaily.high, PriceDaily.low, PriceDaily.close,
-        PriceDaily.volume,
-    ).order_by(PriceDaily.asset_id, PriceDaily.date)
-    for rid, aid, when, o, h, l, c, v in session.execute(daily).yield_per(5000):
-        reason = validate_price_row(o, h, l, c, v, daily=True)
-        if reason:
-            bad.append(BadRow("price_daily", rid, aid, tickers.get(aid, str(aid)), when, reason))
+    if "price_daily" in tables:
+        daily = select(
+            PriceDaily.id, PriceDaily.asset_id, PriceDaily.date,
+            PriceDaily.open, PriceDaily.high, PriceDaily.low, PriceDaily.close,
+            PriceDaily.volume,
+        ).order_by(PriceDaily.asset_id, PriceDaily.date)
+        if asset_ids is not None:
+            daily = daily.where(PriceDaily.asset_id.in_(list(asset_ids)))
+        for rid, aid, when, o, h, l, c, v in session.execute(daily).yield_per(5000):
+            if since is not None and aid in since and when < since[aid]:
+                continue
+            reason = validate_price_row(o, h, l, c, v, daily=True)
+            if reason:
+                bad.append(BadRow("price_daily", rid, aid, tickers.get(aid, str(aid)), when, reason))
 
-    intraday = select(
-        PriceIntraday.id, PriceIntraday.asset_id, PriceIntraday.timestamp,
-        PriceIntraday.open, PriceIntraday.high, PriceIntraday.low, PriceIntraday.close,
-        PriceIntraday.volume,
-    ).order_by(PriceIntraday.asset_id, PriceIntraday.timestamp)
-    for rid, aid, when, o, h, l, c, v in session.execute(intraday).yield_per(5000):
-        reason = validate_price_row(o, h, l, c, v, daily=False)
-        if reason:
-            bad.append(BadRow("price_intraday", rid, aid, tickers.get(aid, str(aid)), when, reason))
+    if "price_intraday" in tables:
+        intraday = select(
+            PriceIntraday.id, PriceIntraday.asset_id, PriceIntraday.timestamp,
+            PriceIntraday.open, PriceIntraday.high, PriceIntraday.low, PriceIntraday.close,
+            PriceIntraday.volume,
+        ).order_by(PriceIntraday.asset_id, PriceIntraday.timestamp)
+        if asset_ids is not None:
+            intraday = intraday.where(PriceIntraday.asset_id.in_(list(asset_ids)))
+        for rid, aid, when, o, h, l, c, v in session.execute(intraday).yield_per(5000):
+            reason = validate_price_row(o, h, l, c, v, daily=False)
+            if reason:
+                bad.append(BadRow("price_intraday", rid, aid, tickers.get(aid, str(aid)), when, reason))
 
     return bad
+
+
+def scoring_window_start(
+    session: Session, asset_ids: Collection[int], lookback_bars: int,
+) -> dict[int, date]:
+    """
+    Per asset, the date of its `lookback_bars`-th most recent stored daily bar,
+    or its first bar if it has fewer. Assets without daily bars are omitted.
+    One indexed query per asset; nothing is loaded beyond a single date.
+    """
+    if lookback_bars < 1:
+        raise ValueError("lookback_bars must be >= 1")
+    out: dict[int, date] = {}
+    for aid in asset_ids:
+        start = session.execute(
+            select(PriceDaily.date).where(PriceDaily.asset_id == aid)
+            .order_by(PriceDaily.date.desc()).offset(lookback_bars - 1).limit(1)
+        ).scalar()
+        if start is None:
+            start = session.execute(
+                select(func.min(PriceDaily.date)).where(PriceDaily.asset_id == aid)
+            ).scalar()
+        if start is not None:
+            out[aid] = start
+    return out
 
 
 def purge_bad_rows(session: Session, bad: list[BadRow]) -> int:

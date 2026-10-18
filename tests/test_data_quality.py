@@ -21,7 +21,7 @@ from investbot.data.models import Asset, Base, PriceDaily, PriceIntraday
 from investbot.data.quality import (
     INCONSISTENT_OHLC, MISSING_OHLC, MISSING_VOLUME, NEGATIVE_VOLUME,
     NON_POSITIVE_PRICE, ZERO_VOLUME_FLAT,
-    audit_prices, purge_bad_rows, validate_price_row,
+    audit_prices, purge_bad_rows, scoring_window_start, validate_price_row,
 )
 
 NAN = float("nan")
@@ -198,6 +198,61 @@ def test_audit_reports_every_bad_row_with_reason(session, asset):
         ("price_intraday", datetime(2026, 10, 16, 9, 30), MISSING_OHLC),
     }
     assert {b.ticker for b in bad} == {"TEST.NS"}
+
+
+def test_audit_default_arguments_equal_explicit_full_scope(session, asset):
+    _seed_mixed_rows(session, asset)
+    full = audit_prices(session)
+    assert len(full) == 3
+    assert audit_prices(session, tables=("price_daily", "price_intraday"),
+                        asset_ids=None, since=None) == full
+
+
+def test_audit_scopes_by_table_asset_and_since(session, asset):
+    _seed_mixed_rows(session, asset)
+    other = Asset(exchange_id=1, ticker="OTHER.NS", name="Other", asset_type="stock")
+    session.add(other)
+    session.commit()
+    session.add(PriceDaily(asset_id=other.id, date=date(2026, 10, 1), open=1, high=1, low=1,
+                           close=None, adj_close=None, volume=1))
+    session.commit()
+
+    daily = audit_prices(session, tables=("price_daily",))
+    assert {b.table for b in daily} == {"price_daily"} and len(daily) == 3
+    assert {b.table for b in audit_prices(session, tables=("price_intraday",))} == {"price_intraday"}
+    assert audit_prices(session, tables=()) == []
+
+    mine = audit_prices(session, asset_ids=[asset.id])
+    assert {b.ticker for b in mine} == {"TEST.NS"} and len(mine) == 3
+    assert audit_prices(session, asset_ids=[]) == []
+
+    # `since` cuts that asset's daily rows only; intraday and other assets are untouched.
+    cut = audit_prices(session, since={asset.id: date(2026, 10, 16)})
+    assert {(b.ticker, b.table, b.when) for b in cut} == {
+        ("TEST.NS", "price_daily", date(2026, 10, 16)),
+        ("TEST.NS", "price_intraday", datetime(2026, 10, 16, 9, 30)),
+        ("OTHER.NS", "price_daily", date(2026, 10, 1)),
+    }
+
+
+def test_scoring_window_start_fewer_and_more_bars_than_lookback(session, asset):
+    short = Asset(exchange_id=1, ticker="SHORT.NS", name="Short", asset_type="stock")
+    empty = Asset(exchange_id=1, ticker="EMPTY.NS", name="Empty", asset_type="stock")
+    session.add_all([short, empty])
+    session.commit()
+    for d in range(1, 11):                         # TEST.NS: Oct 1..10
+        session.add(PriceDaily(asset_id=asset.id, date=date(2026, 10, d), open=1, high=1, low=1,
+                               close=1, adj_close=1, volume=1))
+    for d in (5, 6):                               # SHORT.NS: 2 bars
+        session.add(PriceDaily(asset_id=short.id, date=date(2026, 10, d), open=1, high=1, low=1,
+                               close=1, adj_close=1, volume=1))
+    session.commit()
+
+    got = scoring_window_start(session, [asset.id, short.id, empty.id], 4)
+    assert got == {asset.id: date(2026, 10, 7), short.id: date(2026, 10, 5)}   # 4th newest / first bar
+    assert scoring_window_start(session, [asset.id], 10)[asset.id] == date(2026, 10, 1)
+    assert scoring_window_start(session, [asset.id], 1)[asset.id] == date(2026, 10, 10)
+    assert scoring_window_start(session, [], 4) == {}
 
 
 def test_purge_deletes_only_bad_rows(session, asset):
