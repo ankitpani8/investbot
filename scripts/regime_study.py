@@ -275,9 +275,11 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
     w("## Rank association\n")
     w(f"Daily cross-sectional Spearman IC (dates with ≥ {MIN_NAMES} names), Newey-West t with "
       "lag H.\n")
-    w("The last two columns run the same IC on the shuffled null panel (not in BH). There, "
-      "a high recent volatility also inflates REALVOL_250, so FWD_VOLX reads low after it: "
-      "the null shows the mechanical part of each IC.\n")
+    w("The last two columns run the same IC on the shuffled null panel (not in BH), which has "
+      "no volatility clustering. What is left there is mechanical: VOL_RATIO (and so "
+      "REGIME_SCORE_CHAOS) and FWD_VOLX share the REALVOL_250 denominator, so sampling noise "
+      "in it correlates them across names; a burst of recent volatility also inflates "
+      "REALVOL_250, which pulls FWD_VOLX down after it. Compare each IC with its null IC.\n")
     nr = res.null_rank.set_index(["name", "target"])
     r2 = rank.copy()
     r2["null_mean"] = [nr["mean"].get((n, t), math.nan) for n, t in zip(r2["name"], r2["target"])]
@@ -343,9 +345,11 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
       "against ~690 OOS dates.")
     w("- The null shares one date permutation across assets with the same calendar, so its "
       "cross-section still co-moves; only serial dependence is removed.")
-    w("- FWD_VOLX is normalised by REALVOL_250 and VOL_RATIO = REALVOL_20 / REALVOL_250, so "
-      "volatility clustering alone makes VOL_RATIO vs FWD_VOLX positive; the question for the "
-      "chaos label is whether it adds to that.")
+    w("- FWD_VOLX is normalised by REALVOL_250 and VOL_RATIO = REALVOL_20 / REALVOL_250. The "
+      "shared denominator alone makes VOL_RATIO vs FWD_VOLX positive across names (see the null "
+      "IC), and volatility clustering adds to it; REALVOL_20 is also inside REALVOL_250's "
+      "window, so a high VOL_RATIO inflates the normaliser and lowers FWD_VOLX (see the null "
+      "chaos − rest difference).")
     w("- FWD_HURST_100 has the same DFA small-sample bias as the real-time HURST_100; the "
       "trend − range difference is unaffected by a common bias.")
     return "\n".join(out) + "\n"
