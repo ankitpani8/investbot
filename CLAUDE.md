@@ -34,6 +34,7 @@ investbot/scheduler/            APScheduler jobs
 investbot/scoring/technical/    indicators.py (public API), _talib_core.py, _extensions.py
 investbot/scoring/fundamental/  stub, returns 100% pass-through for MVP
 investbot/scoring/sentiment/    stub (FinBERT later)
+investbot/evaluation/           walk-forward forward-return harness (python main.py evaluate)
 scripts/smoke_indicators.py     end-to-end indicator smoke test against the real DB
 tests/                          pytest, no network or DB needed
 docs/                           master plan and decision logs

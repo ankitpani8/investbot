@@ -65,6 +65,17 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] `scorer.py` follow-up: staleness counts business days without an NSE holiday calendar, so a long holiday weekend can read 1 day staler than it is.
 - [ ] The scratch DB still has TATAMOTORS.NS active with no price rows (the seed's `RETIRED_TICKERS` deactivation has not run there, and TMPV.NS is absent). `main.py score` lists it as `no_data`. Check the real DB after the next `setup`.
 
+## Evaluation
+- [x] Walk-forward forward-return harness: `investbot/evaluation/` (panel, next-open labels, baselines, Newey-West IC, quintiles, turnover, cost check, regime/year splits, BH q-values), `python main.py evaluate`, first report `docs/reports/eval_20261018.md` (`agent/100-eval-harness`)
+- [ ] **Data: historical NIFTY50 constituents** (survivorship bias). The harness uses today's constituents over the whole history, which biases results upward. Store index membership with dates (NSE/niftyindices.com change notices), let `build_dataset` take the universe as of each date, and keep delisted/removed names' price history.
+- [ ] Harness follow-up: the cost check holds open[t+1] → close[t+h] and skips the overnight gap before the next entry, so short horizons read as large absolute losses (open-to-close drift). Add a continuously-held variant (open-to-open between rebalances) for the portfolio numbers.
+- [ ] Harness follow-up: the chaotic regime has only 41 OOS dates with ≥ 10 chaotic names, so its cross-sectional split is thin. Add a pooled (panel) IC or lower `MIN_NAMES` for that split.
+- [ ] Harness follow-up: the MTF family (and intraday signals) cannot be evaluated: only ~60 sessions of 15m data exist. Revisit once 1h/15m history accumulates (see the multi-timeframe follow-up).
+- [ ] Harness follow-up: the panel computes features on the full history, while `score()` uses a 750-bar window; EMA-seeded columns differ by ~1e-5. Once the scorer batch path exists, evaluate through it so the harness measures exactly what production scores.
+- [ ] Harness follow-up: tax drag (STCG 20% on gains of short holds) is not in the cost check yet; add it via `trading/tax_ledger.py` when the backtest layer exists.
+- [ ] Harness follow-up: `statsmodels` is not installed, so the BH test against it is skipped (the hand example runs). Fine as is; no dependency added.
+- [ ] Decide on the first report's findings (see DECISIONS_PENDING): RVOL_CONFIRM is significant only inverted at h = 1; trend signals lean negative at h = 20 without surviving BH; nothing beats the baselines as designed.
+
 ## Phase 5d: tax and trading
 - [x] `trading/tax_rules.py`, `transaction_costs.py`, `lot_tracker.py`: regime params, FY label, calendar-month holding period, cost calculator, FIFO lots with realisations and unrealised-by-lot (`agent/110-transaction-costs-lots`)
 - [ ] DP charges: add the depository (CDSL/NSDL) charge plus the broker's DP fee per scrip per sell day to `estimate_costs` (not per order). Rate and who bills it needs checking against the broker's contract note.
