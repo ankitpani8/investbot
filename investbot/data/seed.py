@@ -142,28 +142,27 @@ def seed_assets(session: Session, exchanges: dict[str, Exchange]):
 
 
 def seed_tax_regimes(session: Session, asset_classes: dict[str, AssetClass]):
-    """Seed tax_regimes table with Indian tax rates."""
-    added = 0
+    """Seed tax_regimes; an existing row with the same regime_name is updated in place."""
+    added = updated = 0
     for regime_data in TAX_REGIMES:
-        regime_name = regime_data["regime_name"]
-        existing = session.query(TaxRegime).filter_by(regime_name=regime_name).first()
-        if existing:
-            logger.info(f"Tax regime '{regime_name}' already exists")
-            continue
-
         data = {**regime_data}  # copy: don't mutate the module-level TAX_REGIMES
         ac = asset_classes.get(data.pop("asset_class_name"))
         data["asset_class_id"] = ac.id if ac else None
 
         # Convert date strings
-        if data.get("effective_from"):
-            data["effective_from"] = date.fromisoformat(data["effective_from"])
-        if data.get("effective_to"):
-            data["effective_to"] = date.fromisoformat(data["effective_to"])
+        for key in ("effective_from", "effective_to"):
+            if data.get(key):
+                data[key] = date.fromisoformat(data[key])
 
+        existing = session.query(TaxRegime).filter_by(regime_name=data["regime_name"]).first()
+        if existing:
+            for key, value in data.items():
+                setattr(existing, key, value)
+            updated += 1
+            continue
         session.add(TaxRegime(**data))
         added += 1
-    logger.info(f"Tax regimes: added {added} new entries")
+    logger.info(f"Tax regimes: added {added} new entries, refreshed {updated}")
 
 
 def run_seed(session: Session):

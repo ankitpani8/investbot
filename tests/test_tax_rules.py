@@ -25,7 +25,7 @@ def test_regime_params_mirror_config():
         for key, val in entry.items():
             if key not in ("effective_from", "effective_to"):
                 assert getattr(p, key) == val
-    assert EQ.effective_from == date(2025, 4, 1)
+    assert EQ.effective_from == date(2024, 7, 23)
     assert EQ.effective_to is None
     assert CRYPTO.effective_from == date(2022, 4, 1)
 
@@ -117,3 +117,36 @@ def test_days_to_long_term():
     assert days_to_long_term(buy, date(2026, 3, 16), EQ) == 0
     assert days_to_long_term(buy, date(2027, 1, 1), EQ) == 0
     assert days_to_long_term(buy, buy, EQ) == 366
+
+
+def test_regime_for_picks_regime_by_date():
+    from investbot.trading.tax_rules import regime_for
+
+    old = regime_for("equity", date(2024, 7, 22))
+    new = regime_for("equity", date(2024, 7, 23))
+    assert (old.regime_name, old.stcg_rate, old.ltcg_rate, old.ltcg_annual_exemption) == (
+        "IN_EQUITY_LISTED_PRE_2024_07_23", 0.15, 0.10, 100_000)
+    assert (new.regime_name, new.stcg_rate, new.ltcg_rate, new.ltcg_annual_exemption) == (
+        "IN_EQUITY_LISTED", 0.20, 0.125, 125_000)
+    assert regime_for("equity", date(2018, 4, 1)).regime_name == "IN_EQUITY_LISTED_PRE_2024_07_23"
+    assert regime_for("equity", date(2030, 1, 1)).regime_name == "IN_EQUITY_LISTED"
+    assert regime_for("crypto", date(2022, 4, 1)).regime_name == "IN_CRYPTO_VDA"
+
+
+def test_regime_for_raises_when_no_row_covers_date():
+    from investbot.trading.tax_rules import regime_for
+
+    with pytest.raises(ValueError):
+        regime_for("equity", date(2018, 3, 31))
+    with pytest.raises(ValueError):
+        regime_for("crypto", date(2022, 3, 31))
+    with pytest.raises(ValueError):
+        regime_for("bonds", date(2025, 1, 1))
+
+
+def test_pre_2024_regime_matches_current_except_rates_exemption_dates():
+    pre = regime_params("IN_EQUITY_LISTED_PRE_2024_07_23")
+    diff = {f.name for f in fields(TaxRegimeParams) if getattr(pre, f.name) != getattr(EQ, f.name)}
+    assert diff == {"regime_name", "stcg_rate", "ltcg_rate", "ltcg_annual_exemption",
+                    "effective_from", "effective_to"}
+    assert pre.effective_to == date(2024, 7, 22)

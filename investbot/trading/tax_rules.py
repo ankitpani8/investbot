@@ -65,6 +65,27 @@ def regime_params(regime_name: str) -> TaxRegimeParams:
     raise ValueError(f"unknown tax regime {regime_name!r} (known: {known})")
 
 
+def regime_for(asset_class_name: str, on_date: date) -> TaxRegimeParams:
+    """The regime of ``asset_class_name`` in force on ``on_date`` (both bounds inclusive).
+
+    Raises ValueError if no row covers the date (e.g. equity before 2018-04-01, crypto
+    before 2022-04-01) or if two rows overlap.
+    """
+    hits = []
+    for entry in TAX_REGIMES:
+        if entry["asset_class_name"] != asset_class_name:
+            continue
+        start = date.fromisoformat(entry["effective_from"])
+        end = date.fromisoformat(entry["effective_to"]) if entry["effective_to"] else None
+        if start <= on_date and (end is None or on_date <= end):
+            hits.append(entry["regime_name"])
+    if not hits:
+        raise ValueError(f"no {asset_class_name!r} tax regime in force on {on_date}")
+    if len(hits) > 1:
+        raise ValueError(f"overlapping {asset_class_name!r} tax regimes on {on_date}: {hits}")
+    return regime_params(hits[0])
+
+
 def fiscal_year(d: date) -> str:
     """Indian fiscal year label (April to March): 2026-03-31 -> '2025-26'."""
     start = d.year if d.month >= 4 else d.year - 1
