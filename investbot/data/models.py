@@ -111,6 +111,25 @@ class CorporateAction(Base):
     fetched_at = Column(DateTime)                               # UTC
 
 
+class IndexMembership(Base):
+    """Dated index membership, one row per continuous stint (asset-class agnostic).
+
+    effective_from is the first session as a member, effective_to the last one
+    (NULL = still a member). Rows are derived from the sourced change list in
+    investbot/config/index_history by data/index_membership.py.
+    """
+    __tablename__ = "index_membership"
+    __table_args__ = (UniqueConstraint("index_code", "asset_id", "effective_from"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    index_code = Column(String, nullable=False)                 # 'NIFTY50'
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    effective_from = Column(Date, nullable=False)               # first session as a member
+    effective_to = Column(Date)                                 # last session as a member; NULL = still a member
+    source = Column(String)                                     # NSE Indices press release URL or circular reference
+    verified = Column(Boolean, default=False)                   # True when the start of the stint is sourced
+
+
 # ──────────────────────────────────────────────────────────
 # §4.3 — Fundamental Data: Equity Financials
 # ──────────────────────────────────────────────────────────

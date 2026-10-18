@@ -4,7 +4,7 @@ Tickers use yfinance format (.NS suffix for NSE).
 Sector/industry data is approximate — will be refined from yfinance info.
 
 Constituent list as of 2026-10-18 (fetched that day from NSE's
-ind_nifty50list.csv, 50 symbols, includes the 2026-09-15 reconstitution).
+ind_nifty50list.csv, 50 symbols, includes the reconstitution effective 2026-09-30).
 The CSV carries no effective date. Names, sector and industry are our own labels.
 """
 
@@ -68,9 +68,12 @@ NIFTY50_TICKERS = [
 #   listed as TMCV.NS on 2025-11-12 and was excluded from NIFTY50 on 2025-11-17.
 # The rest were dropped from NIFTY50 and may still trade; deactivated only
 # because they are no longer index members (history kept).
-#   WIPRO.NS: removed in the 2026-09-15 reconstitution.
-#   BPCL, BRITANNIA, DIVISLAB, HEROMOTOCO, INDUSINDBK: absent from the
-#   2026-10-18 NSE list (reconstitution dates not verified).
+#   Exit dates below are the first session outside the index, read in the NSE
+#   Indices press releases listed in config/index_history/nifty50_changes.csv
+#   (verified 2026-10-18):
+#   BPCL.NS, BRITANNIA.NS: 2025-03-28.    DIVISLAB.NS: 2024-09-30 (it had joined
+#   on 2020-09-25).    HEROMOTOCO.NS, INDUSINDBK.NS: 2025-09-30.
+#   WIPRO.NS: 2026-09-30 (press release of 2026-08-10, replaced by BSE; not 2026-09-15).
 RETIRED_TICKERS = [
     "TATAMOTORS.NS",
     "WIPRO.NS",

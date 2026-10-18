@@ -3,6 +3,7 @@ Seed the database with reference data:
 - Asset classes (equity, crypto)
 - Exchanges (NSE, BINANCE)
 - Assets (NIFTY50 tickers, crypto tickers)
+- Dated NIFTY50 membership (index_membership; past members are created inactive)
 - Tax regimes (Indian equity + crypto)
 """
 import logging
@@ -11,6 +12,7 @@ from datetime import time, date
 from sqlalchemy.orm import Session
 
 from investbot.data.models import AssetClass, Exchange, Asset, TaxRegime
+from investbot.data.index_membership import sync_index_membership
 from investbot.config.tickers import NIFTY50_TICKERS, CRYPTO_TICKERS, RETIRED_TICKERS
 from investbot.config.tax_regimes import TAX_REGIMES
 
@@ -171,6 +173,7 @@ def run_seed(session: Session):
     asset_classes = seed_asset_classes(session)
     exchanges = seed_exchanges(session, asset_classes)
     seed_assets(session, exchanges)
+    sync_index_membership(session)
     seed_tax_regimes(session, asset_classes)
     session.commit()
     logger.info("=== Database seed complete ===")

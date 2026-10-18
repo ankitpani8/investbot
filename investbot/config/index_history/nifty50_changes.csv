@@ -1,0 +1,45 @@
+effective_date,action,ticker,name,source,note
+2019-03-29,remove,HINDPETRO.NS,Hindustan Petroleum Corporation,https://www.niftyindices.com/Press_Release/ind_prs25022019.pdf,
+2019-03-29,add,BRITANNIA.NS,Britannia Industries,https://www.niftyindices.com/Press_Release/ind_prs25022019.pdf,
+2019-09-27,remove,IBULHSGFIN.NS,Indiabulls Housing Finance,https://www.niftyindices.com/Press_Release/ind_prs28082019.pdf,
+2019-09-27,add,NESTLEIND.NS,Nestle India,https://www.niftyindices.com/Press_Release/ind_prs28082019.pdf,
+2020-03-19,remove,YESBANK.NS,Yes Bank,https://www.niftyindices.com/Press_Release/ind_prs16032020.pdf,removal accelerated from 2020-03-27 (ind_prs18022020) after the Yes Bank reconstruction scheme
+2020-03-19,add,SHREECEM.NS,Shree Cement,https://www.niftyindices.com/Press_Release/ind_prs16032020.pdf,
+2020-07-31,remove,VEDL.NS,Vedanta,https://www.niftyindices.com/Press_Release/ind_prs02072020_1.pdf,proposed voluntary delisting
+2020-07-31,add,HDFCLIFE.NS,HDFC Life Insurance Company,https://www.niftyindices.com/Press_Release/ind_prs02072020_1.pdf,
+2020-09-25,remove,INFRATEL.NS,Bharti Infratel,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
+2020-09-25,remove,ZEEL.NS,Zee Entertainment Enterprises,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
+2020-09-25,add,DIVISLAB.NS,Divi's Laboratories,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
+2020-09-25,add,SBILIFE.NS,SBI Life Insurance Company,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
+2021-03-31,remove,GAIL.NS,GAIL (India),https://www.niftyindices.com/Press_Release/ind_prs23022021.pdf,
+2021-03-31,add,TATACONSUM.NS,Tata Consumer Products,https://www.niftyindices.com/Press_Release/ind_prs23022021.pdf,
+2022-03-31,remove,IOC.NS,Indian Oil Corporation,https://www.niftyindices.com/Press_Release/ind_prs24022022_1.pdf,
+2022-03-31,add,APOLLOHOSP.NS,Apollo Hospitals Enterprise,https://www.niftyindices.com/Press_Release/ind_prs24022022_1.pdf,
+2022-09-30,remove,SHREECEM.NS,Shree Cement,https://www.niftyindices.com/Press_Release/ind_prs01092022.pdf,
+2022-09-30,add,ADANIENT.NS,Adani Enterprises,https://www.niftyindices.com/Press_Release/ind_prs01092022.pdf,
+2023-07-13,remove,HDFC.NS,Housing Development Finance Corporation,https://www.niftyindices.com/Press_Release/ind_prs04072023.pdf,amalgamation with HDFC Bank
+2023-07-13,add,LTIM.NS,LTIMindtree,https://www.niftyindices.com/Press_Release/ind_prs04072023.pdf,
+2023-07-20,add,JIOFIN.NS,Jio Financial Services,https://www.niftyindices.com/Press_Release/ind_prs17072023.pdf,"temporary 51st member: demerger from Reliance, in the index at a constant price before it listed on 2023-08-21"
+2023-09-07,remove,JIOFIN.NS,Jio Financial Services,https://www.niftyindices.com/Press_Release/ind_prs05092023.pdf,temporary member excluded; JIOFIN is added again on 2025-03-28
+2024-03-28,remove,UPL.NS,UPL,https://www.niftyindices.com/Press_Release/ind_prs28022024.pdf,
+2024-03-28,add,SHRIRAMFIN.NS,Shriram Finance,https://www.niftyindices.com/Press_Release/ind_prs28022024.pdf,
+2024-09-30,remove,DIVISLAB.NS,Divi's Laboratories,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
+2024-09-30,remove,LTIM.NS,LTIMindtree,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
+2024-09-30,add,BEL.NS,Bharat Electronics,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
+2024-09-30,add,TRENT.NS,Trent,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
+2025-01-06,add,ITCHOTELS.NS,ITC Hotels,https://www.niftyindices.com/Press_Release/ind_prs30122024.pdf,"temporary 51st member: demerger from ITC, dummy symbol DUMMYITC at zero price until it listed on 2025-01-29"
+2025-02-10,remove,ITCHOTELS.NS,ITC Hotels,https://www.niftyindices.com/Press_Release/ind_prs06022025_1.pdf,temporary member excluded
+2025-03-28,remove,BPCL.NS,Bharat Petroleum Corporation,https://www.niftyindices.com/Press_Release/ind_prs21022025.pdf,
+2025-03-28,remove,BRITANNIA.NS,Britannia Industries,https://www.niftyindices.com/Press_Release/ind_prs21022025.pdf,
+2025-03-28,add,JIOFIN.NS,Jio Financial Services,https://www.niftyindices.com/Press_Release/ind_prs21022025.pdf,
+2025-03-28,add,ETERNAL.NS,Eternal (Zomato),https://www.niftyindices.com/Press_Release/ind_prs21022025.pdf,"the release says ZOMATO; the company is now Eternal, kept under one ticker ETERNAL.NS (see config/tickers.py)"
+2025-09-30,remove,HEROMOTOCO.NS,Hero MotoCorp,https://www.niftyindices.com/Press_Release/ind_prs22082025.pdf,
+2025-09-30,remove,INDUSINDBK.NS,IndusInd Bank,https://www.niftyindices.com/Press_Release/ind_prs22082025.pdf,
+2025-09-30,add,INDIGO.NS,InterGlobe Aviation (IndiGo),https://www.niftyindices.com/Press_Release/ind_prs22082025.pdf,
+2025-09-30,add,MAXHEALTH.NS,Max Healthcare Institute,https://www.niftyindices.com/Press_Release/ind_prs22082025.pdf,
+2025-10-14,add,TMCV.NS,"Tata Motors (commercial vehicles, ex TML Commercial Vehicles)",https://www.niftyindices.com/Press_Release/ind_prs07102025.pdf,"temporary 51st member: demerger from Tata Motors, dummy symbol DUMMYTATAM at zero price until it listed on 2025-11-12. The continuing company is Tata Motors Passenger Vehicles (TMPV.NS, formerly TATAMOTORS.NS), a member throughout"
+2025-11-17,remove,TMCV.NS,"Tata Motors (commercial vehicles, ex TML Commercial Vehicles)",https://www.niftyindices.com/Press_Release/ind_prs13112025.pdf,temporary member excluded
+2025-12-05,add,KWIL.NS,Kwality Wall's (India),https://www.niftyindices.com/Press_Release/ind_prs28112025.pdf,"temporary 51st member: ice cream demerger from Hindustan Unilever, dummy symbol DUMMYHDLVR at zero price until it listed on 2026-02-16"
+2026-02-24,remove,KWIL.NS,Kwality Wall's (India),https://www.niftyindices.com/Press_Release/ind_prs20022026_1.pdf,temporary member excluded
+2026-09-30,remove,WIPRO.NS,Wipro,https://www.niftyindices.com/Press_Release/ind_prs10082026.pdf,
+2026-09-30,add,BSE.NS,BSE,https://www.niftyindices.com/Press_Release/ind_prs10082026.pdf,

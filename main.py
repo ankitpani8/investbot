@@ -21,6 +21,7 @@ from datetime import datetime
 
 from investbot.config.settings import LOG_LEVEL
 from investbot.data.db import init_db, SessionLocal
+from investbot.data.index_membership import membership_summary
 from investbot.data.seed import run_seed
 from investbot.data.models import (
     AssetClass, Exchange, Asset, PriceDaily, PriceIntraday,
@@ -150,6 +151,8 @@ def cmd_status():
         print(f"  Intraday price rows: {n_intraday:,}")
         print(f"  Financial records:   {n_financials}")
         print(f"  Data availability:   {n_availability}")
+        ms = membership_summary(session)
+        print(f"  Index membership:    {ms['rows']} rows, {ms['members_without_prices']} members without prices")
         print("=" * 50 + "\n")
 
         # Show per-asset breakdown for first 5
