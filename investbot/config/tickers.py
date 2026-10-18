@@ -3,7 +3,9 @@ NIFTY50 ticker list and metadata for seeding the database.
 Tickers use yfinance format (.NS suffix for NSE).
 Sector/industry data is approximate — will be refined from yfinance info.
 
-Last updated: October 2026
+Constituent list as of 2026-10-18 (fetched that day from NSE's
+ind_nifty50list.csv, 50 symbols, includes the 2026-09-15 reconstitution).
+The CSV carries no effective date. Names, sector and industry are our own labels.
 """
 
 NIFTY50_TICKERS = [
@@ -25,7 +27,6 @@ NIFTY50_TICKERS = [
     ("MARUTI.NS",       "Maruti Suzuki",               "Automobile",       "Auto Manufacturers"),
     ("SUNPHARMA.NS",    "Sun Pharma",                  "Healthcare",       "Pharmaceuticals"),
     ("TITAN.NS",        "Titan Company",               "Consumer",         "Jewellery & Watches"),
-    ("WIPRO.NS",        "Wipro",                       "Technology",       "IT Services"),
     ("ULTRACEMCO.NS",   "UltraTech Cement",            "Materials",        "Cement"),
     ("HCLTECH.NS",      "HCL Technologies",            "Technology",       "IT Services"),
     ("NTPC.NS",         "NTPC",                        "Energy",           "Power Generation"),
@@ -41,33 +42,43 @@ NIFTY50_TICKERS = [
     ("ADANIENT.NS",     "Adani Enterprises",           "Conglomerate",     "Diversified"),
     ("ADANIPORTS.NS",   "Adani Ports",                 "Industrials",      "Port Operations"),
     ("COALINDIA.NS",    "Coal India",                  "Energy",           "Mining"),
-    ("BPCL.NS",         "Bharat Petroleum",            "Energy",           "Oil & Gas Refining"),
     ("GRASIM.NS",       "Grasim Industries",           "Materials",        "Cement & Textiles"),
     ("DRREDDY.NS",      "Dr Reddy's Laboratories",     "Healthcare",       "Pharmaceuticals"),
     ("CIPLA.NS",        "Cipla",                       "Healthcare",       "Pharmaceuticals"),
     ("APOLLOHOSP.NS",   "Apollo Hospitals",            "Healthcare",       "Hospitals"),
-    ("HEROMOTOCO.NS",   "Hero MotoCorp",               "Automobile",       "Two Wheelers"),
     ("EICHERMOT.NS",    "Eicher Motors",               "Automobile",       "Two Wheelers"),
-    ("DIVISLAB.NS",     "Divis Laboratories",          "Healthcare",       "Pharmaceuticals"),
     ("SBILIFE.NS",      "SBI Life Insurance",          "Financial",        "Insurance"),
     ("HDFCLIFE.NS",     "HDFC Life Insurance",         "Financial",        "Insurance"),
-    ("BRITANNIA.NS",    "Britannia Industries",        "FMCG",             "Food Products"),
     ("TATACONSUM.NS",   "Tata Consumer Products",      "FMCG",             "Food & Beverages"),
-    ("INDUSINDBK.NS",   "IndusInd Bank",               "Financial",        "Banks"),
     ("HINDALCO.NS",     "Hindalco Industries",         "Materials",        "Aluminium"),
     ("BAJAJ-AUTO.NS",   "Bajaj Auto",                  "Automobile",       "Two Wheelers"),
-    ("WIPRO.NS",        "Wipro",                       "Technology",       "IT Services"),  # duplicate guard handled in seed
     ("SHRIRAMFIN.NS",   "Shriram Finance",             "Financial",        "NBFC"),
     ("BEL.NS",          "Bharat Electronics",          "Industrials",      "Defence Electronics"),
     ("TRENT.NS",        "Trent",                       "Consumer",         "Retail"),
+    ("BSE.NS",         "BSE",                         "Financial",        "Capital Markets"),
+    ("ETERNAL.NS",     "Eternal (Zomato)",            "Consumer",         "Online Food Delivery & Quick Commerce"),
+    ("INDIGO.NS",      "InterGlobe Aviation (IndiGo)", "Industrials",     "Airlines"),
+    ("JIOFIN.NS",      "Jio Financial Services",      "Financial",        "NBFC"),
+    ("MAXHEALTH.NS",   "Max Healthcare Institute",    "Healthcare",       "Hospitals"),
 ]
 
 # Tickers no longer listed under this symbol. The seed marks existing rows
 # is_active=False and keeps their price history. Never delete these rows.
 #   TATAMOTORS.NS: renamed TMPV.NS after the Oct 2025 demerger. The CV arm
 #   listed as TMCV.NS on 2025-11-12 and was excluded from NIFTY50 on 2025-11-17.
+# The rest were dropped from NIFTY50 and may still trade; deactivated only
+# because they are no longer index members (history kept).
+#   WIPRO.NS: removed in the 2026-09-15 reconstitution.
+#   BPCL, BRITANNIA, DIVISLAB, HEROMOTOCO, INDUSINDBK: absent from the
+#   2026-10-18 NSE list (reconstitution dates not verified).
 RETIRED_TICKERS = [
     "TATAMOTORS.NS",
+    "WIPRO.NS",
+    "BPCL.NS",
+    "BRITANNIA.NS",
+    "DIVISLAB.NS",
+    "HEROMOTOCO.NS",
+    "INDUSINDBK.NS",
 ]
 
 # Crypto tickers for future Phase (schema seeded now, data later)

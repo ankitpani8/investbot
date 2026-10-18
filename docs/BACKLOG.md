@@ -4,7 +4,10 @@ Status: `[ ]` open Â· `[~]` in progress (put the agent branch name next to it) Â
 
 ## Housekeeping
 - [x] Replace TATAMOTORS.NS with TMPV.NS; seed deactivates `RETIRED_TICKERS` without deleting history (`agent/005-housekeeping`)
-- [ ] Sync `NIFTY50_TICKERS` with the current index. NSE's 2026-09-15 release excludes WIPRO and includes DRREDDY (already listed). The list also has WIPRO twice. Check any other drift against the niftyindices.com constituent CSV, and move removed names to `RETIRED_TICKERS`.
+- [x] Sync `NIFTY50_TICKERS` with the current index: duplicate WIPRO removed; WIPRO, BPCL, BRITANNIA, DIVISLAB, HEROMOTOCO, INDUSINDBK moved to `RETIRED_TICKERS`; BSE, ETERNAL, INDIGO, JIOFIN, MAXHEALTH added; list as of 2026-10-18 (`agent/140-nifty50-constituents-sync`)
+- [ ] Historical NIFTY50 constituents for survivorship-free evaluation: store dated membership (symbol, added, removed) so the evaluation harness only scores a stock while it was in the index. `NIFTY50_TICKERS` is today's list only, so back-tests on it have survivorship bias. Source: NSE/niftyindices reconstitution circulars (index change history); needs a manual or one-off scrape. Needed by the evaluation harness (100-eval-harness).
+- [ ] Run `python main.py ingest` for the 5 new constituents (BSE, ETERNAL, INDIGO, JIOFIN, MAXHEALTH): they are seeded but have no price rows yet. Needs a human to trigger it. Yahoo resolves all five symbols (checked 2026-10-18). ETERNAL (ex-Zomato) and JIOFIN (listed Aug 2023) have short or renamed history.
+- [ ] Constituent sync is manual; add a periodic check of `ind_nifty50list.csv` against `NIFTY50_TICKERS` (NSE reconstitutes in March and September). Source used: https://archives.nseindia.com/content/indices/ind_nifty50list.csv (the niftyindices.com URL timed out).
 - [x] Remove the duplicate `investbot/scoring/technical/smoke_indicators.py` (`agent/005-housekeeping`)
 - [x] pytest promotes FutureWarning to error (`agent/005-housekeeping`)
 - [ ] Update `docs/investbot_master_plan_v3.md` to v4: TA-Lib instead of pandas-ta, institutional flow signals, the cross-asset-class allocation layer, the 21-day LODR lag.

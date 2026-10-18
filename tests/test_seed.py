@@ -89,3 +89,20 @@ def test_seed_tax_regimes_updates_existing_row(session):
     row = _equity_regimes(session)["IN_EQUITY_LISTED"]
     assert row.effective_from == date(2024, 7, 23)
     assert row.stcg_rate == 0.20
+
+
+def test_ticker_list_has_no_duplicate_symbols():
+    symbols = [t for t, *_ in NIFTY50_TICKERS]
+    dupes = sorted({s for s in symbols if symbols.count(s) > 1})
+    assert not dupes, f"duplicate symbols: {dupes}"
+    assert len(RETIRED_TICKERS) == len(set(RETIRED_TICKERS))
+
+
+def test_every_retired_ticker_absent_from_active_list():
+    active = {t for t, *_ in NIFTY50_TICKERS}
+    assert not active & set(RETIRED_TICKERS)
+    assert "WIPRO.NS" in RETIRED_TICKERS
+
+
+def test_nifty50_has_fifty_members():
+    assert len(NIFTY50_TICKERS) == 50
