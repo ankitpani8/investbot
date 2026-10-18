@@ -1,23 +1,25 @@
 """
 Price data ingestion via yfinance.
-Handles daily (5 years) and intraday (60 days of 15-min candles).
+Handles daily (5 years) and intraday (60 days of 15-min candles); assets with stored
+bars only download the overlap window (see DAILY_INCREMENTAL_OVERLAP_DAYS).
 Includes retry logic, gap detection, and a trailing-window upsert
 (see DAILY_REFRESH_SESSIONS / INTRADAY_REFRESH_DAYS in settings).
 """
 import logging
 import time as time_module
 from dataclasses import dataclass, field
-from datetime import date, datetime, time as dt_time, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from investbot.config.settings import (
-    DAILY_BAR_FINAL_AFTER, DAILY_PERIOD, DAILY_REFRESH_SESSIONS,
-    INTRADAY_INTERVAL, INTRADAY_PERIOD, INTRADAY_REFRESH_DAYS,
+    DAILY_BAR_FINAL_AFTER, DAILY_INCREMENTAL_OVERLAP_DAYS, DAILY_PERIOD, DAILY_REFRESH_SESSIONS,
+    INTRADAY_INCREMENTAL_OVERLAP_DAYS, INTRADAY_INTERVAL, INTRADAY_MAX_LOOKBACK_DAYS,
+    INTRADAY_PERIOD, INTRADAY_REFRESH_DAYS,
     MAX_RETRIES, RETRY_DELAY_SECONDS, TIMEZONE,
 )
 from investbot.data.models import Asset, Base, CorporateAction, PriceDaily, PriceIntraday
@@ -40,16 +42,20 @@ def _retry(func, *args, max_retries=MAX_RETRIES, delay=RETRY_DELAY_SECONDS, **kw
                 raise
 
 
-def _download_prices(ticker: str, period: str, interval: str, actions: bool = False) -> pd.DataFrame:
+def _download_prices(
+    ticker: str, period: str, interval: str, actions: bool = False, start: date | None = None,
+) -> pd.DataFrame:
     """
     Download price data from yfinance with retry.
 
     `actions=True` adds the `Dividends` and `Stock Splits` columns to the same request.
+    With `start` the request is `start=` (through today) and `period` is ignored.
     """
     def _do_download():
+        window = {"start": start} if start is not None else {"period": period}
         data = yf.download(
             ticker,
-            period=period,
+            **window,
             interval=interval,
             progress=False,
             auto_adjust=False,
@@ -63,6 +69,75 @@ def _download_prices(ticker: str, period: str, interval: str, actions: bool = Fa
     return _retry(_do_download)
 
 
+def _download_start(
+    session: Session, asset: Asset, interval: str, now: datetime | None = None,
+) -> date | None:
+    """
+    First date to download for an asset that already has history, or None for the full period.
+
+    The last stored bar date minus the overlap (see settings). None when the asset has no
+    rows for this table/interval. For intraday also None when that start would fall outside
+    yfinance's 15m lookback (INTRADAY_MAX_LOOKBACK_DAYS), which Yahoo rejects.
+    """
+    if interval == "1d":
+        last = session.execute(
+            select(func.max(PriceDaily.date)).where(PriceDaily.asset_id == asset.id)
+        ).scalar()
+        overlap = DAILY_INCREMENTAL_OVERLAP_DAYS
+    else:
+        last = session.execute(
+            select(func.max(PriceIntraday.timestamp)).where(
+                PriceIntraday.asset_id == asset.id, PriceIntraday.interval == interval)
+        ).scalar()
+        overlap = INTRADAY_INCREMENTAL_OVERLAP_DAYS
+    if last is None:
+        return None
+
+    start = (last.date() if isinstance(last, datetime) else last) - timedelta(days=overlap)
+    if interval != "1d" and (_now_ist(now).date() - start).days > INTRADAY_MAX_LOOKBACK_DAYS - 1:
+        logger.info(f"{asset.ticker}: {interval} overlap start {start} is outside the "
+                    f"{INTRADAY_MAX_LOOKBACK_DAYS}-day limit, downloading {INTRADAY_PERIOD}")
+        return None
+    return start
+
+
+@dataclass
+class UpsertCounts:
+    inserted: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    rejected: list[tuple] = field(default_factory=list)   # (key, reason)
+
+
+@dataclass
+class IngestResult:
+    """What one asset's daily or intraday ingestion did (`actions` is daily only)."""
+    counts: UpsertCounts = field(default_factory=UpsertCounts)
+    actions: UpsertCounts = field(default_factory=UpsertCounts)
+    full_downloads: int = 0           # yfinance requests for the full period
+    incremental_downloads: int = 0    # yfinance requests with a start date
+
+
+def _fetch(
+    result: IngestResult, ticker: str, period: str, interval: str, start: date | None,
+    **kwargs,
+) -> pd.DataFrame | None:
+    """One counted download with flattened columns; None if it failed after the retries."""
+    try:
+        if start is None:
+            df = _download_prices(ticker, period, interval, **kwargs)
+            result.full_downloads += 1
+        else:
+            df = _download_prices(ticker, period, interval, start=start, **kwargs)
+            result.incremental_downloads += 1
+    except Exception as e:
+        logger.error(f"Failed to download {interval} prices for {ticker}: {e}")
+        return None
+    if isinstance(df.columns, pd.MultiIndex):       # yfinance, single ticker
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+
 def ingest_daily_prices(session: Session, asset: Asset, now: datetime | None = None) -> int:
     """
     Pull daily OHLCV for an asset and store it.
@@ -74,25 +149,71 @@ def ingest_daily_prices(session: Session, asset: Asset, now: datetime | None = N
 
     Returns the number of rows written (inserted + updated).
     """
+    counts = _ingest_daily(session, asset, now).counts
+    return counts.inserted + counts.updated
+
+
+def _ingest_daily(session: Session, asset: Asset, now: datetime | None) -> IngestResult:
+    """
+    Daily ingestion with its counts. An asset with stored bars downloads only the overlap
+    window; it falls back to the full DAILY_PERIOD (one extra request) when that window holds
+    fewer than DAILY_REFRESH_SESSIONS sessions, and re-downloads the full period for its
+    corporate actions when the window shows a split that is not stored yet.
+    """
     ticker = asset.ticker
     logger.info(f"Ingesting daily prices for {ticker}...")
-
-    try:
-        df = _download_prices(ticker, DAILY_PERIOD, "1d", actions=True)
-    except Exception as e:
-        logger.error(f"Failed to download daily prices for {ticker}: {e}")
-        return 0
-
-    if df.empty:
-        return 0
-
-    # Handle MultiIndex columns from yfinance (if single ticker)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
+    result = IngestResult()
     now_ist = _now_ist(now)
-    today_unfinished = now_ist.time() < _parse_hhmm(DAILY_BAR_FINAL_AFTER)
 
+    start = _download_start(session, asset, "1d", now)
+    df = _fetch(result, ticker, DAILY_PERIOD, "1d", start, actions=True)
+    if df is None:
+        return result
+    bars, skipped = _daily_bars(df, now_ist)
+
+    if start is not None and len(bars) < DAILY_REFRESH_SESSIONS:
+        logger.info(f"{ticker}: incremental download from {start} holds {len(bars)} session(s), "
+                    f"fewer than the {DAILY_REFRESH_SESSIONS}-session refresh window; "
+                    f"downloading {DAILY_PERIOD}")
+        start = None
+        df = _fetch(result, ticker, DAILY_PERIOD, "1d", None, actions=True)
+        if df is None:
+            return result
+        bars, skipped = _daily_bars(df, now_ist)
+
+    if not bars and df.empty:
+        return result
+
+    refresh_from = _refresh_start(sorted(bars), DAILY_REFRESH_SESSIONS, key=lambda d: d)
+    result.counts = _upsert_bars(
+        session, PriceDaily, PriceDaily.date, bars, refresh_from,
+        filters=[PriceDaily.asset_id == asset.id],
+        new_row=lambda when, f: PriceDaily(asset_id=asset.id, date=when, **f),
+    )
+    _log_counts(ticker, "daily", result.counts, skipped, "unfinished session")
+
+    fetched_at = now_ist.astimezone(timezone.utc)
+    incoming = _incoming_actions(df, now_ist.date())
+    if start is not None:
+        new_splits = _new_splits(session, asset, incoming)
+        if new_splits:
+            logger.info(f"{ticker}: new split(s) {sorted(d.isoformat() for d in new_splits)} in "
+                        f"the incremental download; downloading {DAILY_PERIOD} to re-state "
+                        f"dividends")
+            full = _fetch(result, ticker, DAILY_PERIOD, "1d", None, actions=True)
+            if full is not None:
+                incoming = _incoming_actions(full, now_ist.date())
+            else:
+                # Not stored, so the next run sees the split as new and retries the re-download.
+                incoming = {k: v for k, v in incoming.items() if k[0] not in new_splits}
+    result.actions = _upsert_incoming(session, asset, incoming, fetched_at)
+    _log_counts(ticker, "actions", result.actions, 0, "")
+    return result
+
+
+def _daily_bars(df: pd.DataFrame, now_ist: datetime) -> tuple[dict, int]:
+    """Validated daily bars by date, plus the number of unfinished (today / future) bars skipped."""
+    today_unfinished = now_ist.time() < _parse_hhmm(DAILY_BAR_FINAL_AFTER)
     bars: dict[date, tuple[dict, str | None]] = {}
     skipped = 0
     for idx, row in df.iterrows():
@@ -107,23 +228,12 @@ def ingest_daily_prices(session: Session, asset: Asset, now: datetime | None = N
         fields = dict(open=o, high=h, low=l, close=c,
                       adj_close=_safe_float(row.get("Adj Close")), volume=volume)
         bars[row_date] = (fields, reason)       # a duplicated index keeps the last bar
-
-    refresh_from = _refresh_start(sorted(bars), DAILY_REFRESH_SESSIONS, key=lambda d: d)
-    counts = _upsert_bars(
-        session, PriceDaily, PriceDaily.date, bars, refresh_from,
-        filters=[PriceDaily.asset_id == asset.id],
-        new_row=lambda when, f: PriceDaily(asset_id=asset.id, date=when, **f),
-    )
-    _log_counts(ticker, "daily", counts, skipped, "unfinished session")
-
-    action_counts = _upsert_actions(session, asset, df, now_ist.astimezone(timezone.utc))
-    _log_counts(ticker, "actions", action_counts, 0, "")
-    return counts.inserted + counts.updated
+    return bars, skipped
 
 
 def ingest_intraday_prices(session: Session, asset: Asset, now: datetime | None = None) -> int:
     """
-    Pull 15-min intraday OHLCV for an asset (last 60 days).
+    Pull 15-min intraday OHLCV for an asset (last 60 days on the first run, then the overlap).
 
     Bars on the last INTRADAY_REFRESH_DAYS trading days in the download are
     upserted; older bars are insert-only. The still-forming candle (end time in
@@ -132,24 +242,48 @@ def ingest_intraday_prices(session: Session, asset: Asset, now: datetime | None 
 
     Returns the number of rows written (inserted + updated).
     """
+    counts = _ingest_intraday(session, asset, now).counts
+    return counts.inserted + counts.updated
+
+
+def _ingest_intraday(session: Session, asset: Asset, now: datetime | None) -> IngestResult:
     ticker = asset.ticker
     logger.info(f"Ingesting intraday prices for {ticker}...")
-
-    try:
-        df = _download_prices(ticker, INTRADAY_PERIOD, INTRADAY_INTERVAL)
-    except Exception as e:
-        logger.error(f"Failed to download intraday prices for {ticker}: {e}")
-        return 0
-
-    if df.empty:
-        return 0
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
+    result = IngestResult()
     now_naive = _now_ist(now).replace(tzinfo=None)
-    bar_length = pd.Timedelta(INTRADAY_INTERVAL).to_pytimedelta()
 
+    start = _download_start(session, asset, INTRADAY_INTERVAL, now)
+    df = _fetch(result, ticker, INTRADAY_PERIOD, INTRADAY_INTERVAL, start)
+    if df is None:
+        return result
+    bars, skipped = _intraday_bars(df, now_naive)
+
+    if start is not None and len({t.date() for t in bars}) < INTRADAY_REFRESH_DAYS:
+        logger.info(f"{ticker}: incremental download from {start} holds fewer than "
+                    f"{INTRADAY_REFRESH_DAYS} trading day(s); downloading {INTRADAY_PERIOD}")
+        df = _fetch(result, ticker, INTRADAY_PERIOD, INTRADAY_INTERVAL, None)
+        if df is None:
+            return result
+        bars, skipped = _intraday_bars(df, now_naive)
+
+    if not bars and df.empty:
+        return result
+
+    refresh_from = _refresh_start(sorted(bars), INTRADAY_REFRESH_DAYS, key=lambda t: t.date())
+    result.counts = _upsert_bars(
+        session, PriceIntraday, PriceIntraday.timestamp, bars, refresh_from,
+        filters=[PriceIntraday.asset_id == asset.id, PriceIntraday.interval == INTRADAY_INTERVAL],
+        new_row=lambda when, f: PriceIntraday(
+            asset_id=asset.id, timestamp=when, interval=INTRADAY_INTERVAL, **f
+        ),
+    )
+    _log_counts(ticker, INTRADAY_INTERVAL, result.counts, skipped, "forming candle")
+    return result
+
+
+def _intraday_bars(df: pd.DataFrame, now_naive: datetime) -> tuple[dict, int]:
+    """Validated intraday bars by naive IST timestamp, plus the number of forming candles skipped."""
+    bar_length = pd.Timedelta(INTRADAY_INTERVAL).to_pytimedelta()
     bars: dict[datetime, tuple[dict, str | None]] = {}
     skipped = 0
     for idx, row in df.iterrows():
@@ -167,33 +301,42 @@ def ingest_intraday_prices(session: Session, asset: Asset, now: datetime | None 
         volume = _safe_int(row.get("Volume"))
         reason = validate_price_row(o, h, l, c, volume, daily=False)
         bars[ts] = (dict(open=o, high=h, low=l, close=c, volume=volume), reason)
-
-    refresh_from = _refresh_start(sorted(bars), INTRADAY_REFRESH_DAYS, key=lambda t: t.date())
-    counts = _upsert_bars(
-        session, PriceIntraday, PriceIntraday.timestamp, bars, refresh_from,
-        filters=[PriceIntraday.asset_id == asset.id, PriceIntraday.interval == INTRADAY_INTERVAL],
-        new_row=lambda when, f: PriceIntraday(
-            asset_id=asset.id, timestamp=when, interval=INTRADAY_INTERVAL, **f
-        ),
-    )
-    _log_counts(ticker, INTRADAY_INTERVAL, counts, skipped, "forming candle")
-    return counts.inserted + counts.updated
+    return bars, skipped
 
 
 def ingest_all_prices(session: Session, asset_type: str = "stock"):
     """
     Ingest daily + intraday prices for all active assets of a given type.
+
+    `daily_total` / `intraday_total` are rows written (inserted + updated). The
+    `*_inserted`, `*_updated`, `*_rejected` keys split them, `actions_*` count
+    corporate-action rows, and `full_downloads` / `incremental_downloads` count
+    yfinance price requests by kind.
     """
     Base.metadata.create_all(session.get_bind())    # corporate_actions may be missing on an existing DB
     assets = session.query(Asset).filter_by(is_active=True, asset_type=asset_type).all()
     logger.info(f"Starting price ingestion for {len(assets)} {asset_type} assets")
 
-    stats = {"daily_total": 0, "intraday_total": 0, "errors": []}
+    stats = {
+        "daily_total": 0, "intraday_total": 0, "errors": [],
+        "daily_inserted": 0, "daily_updated": 0, "daily_rejected": 0,
+        "intraday_inserted": 0, "intraday_updated": 0, "intraday_rejected": 0,
+        "actions_inserted": 0, "actions_updated": 0,
+        "full_downloads": 0, "incremental_downloads": 0,
+    }
     for i, asset in enumerate(assets, 1):
         logger.info(f"[{i}/{len(assets)}] Processing {asset.ticker}...")
         try:
-            stats["daily_total"] += ingest_daily_prices(session, asset)
-            stats["intraday_total"] += ingest_intraday_prices(session, asset)
+            for label, ingest in (("daily", _ingest_daily), ("intraday", _ingest_intraday)):
+                res = ingest(session, asset, None)
+                stats[f"{label}_inserted"] += res.counts.inserted
+                stats[f"{label}_updated"] += res.counts.updated
+                stats[f"{label}_rejected"] += len(res.counts.rejected)
+                stats[f"{label}_total"] += res.counts.inserted + res.counts.updated
+                stats["actions_inserted"] += res.actions.inserted
+                stats["actions_updated"] += res.actions.updated
+                stats["full_downloads"] += res.full_downloads
+                stats["incremental_downloads"] += res.incremental_downloads
         except Exception as e:
             logger.error(f"Error processing {asset.ticker}: {e}")
             stats["errors"].append(asset.ticker)
@@ -238,31 +381,11 @@ def detect_gaps(session: Session, asset: Asset, max_gap_days: int = 5) -> list[t
 _IST = ZoneInfo(TIMEZONE)
 
 
-@dataclass
-class UpsertCounts:
-    inserted: int = 0
-    updated: int = 0
-    unchanged: int = 0
-    rejected: list[tuple] = field(default_factory=list)   # (key, reason)
-
-
 _ACTION_COLUMNS = (("Dividends", "dividend"), ("Stock Splits", "split"))
 
 
-def _upsert_actions(session: Session, asset: Asset, df: pd.DataFrame, now: datetime) -> UpsertCounts:
-    """
-    Upsert every non-zero dividend and split row of a daily download.
-
-    Unlike OHLCV there is no refresh window: actions are sparse, and yfinance
-    re-states dividend amounts after a later split, so any row may change. An
-    existing (ex_date, action_type) row gets its `value` and `fetched_at`
-    updated only when the value differs. Rows dated after today (IST) are
-    skipped. `now` is the fetch time; a naive value is taken to be UTC.
-    """
-    counts = UpsertCounts()
-    today = _now_ist(now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now).date()
-    fetched_at = (now if now.tzinfo is None else now.astimezone(timezone.utc)).replace(tzinfo=None)
-
+def _incoming_actions(df: pd.DataFrame, today: date) -> dict[tuple[date, str], float]:
+    """Every non-zero dividend and split of a download by (ex_date, type); later ex-dates are skipped."""
     incoming: dict[tuple[date, str], float] = {}
     for column, action_type in _ACTION_COLUMNS:
         if column not in df.columns:
@@ -275,8 +398,43 @@ def _upsert_actions(session: Session, asset: Asset, df: pd.DataFrame, now: datet
             if ex_date > today:
                 continue
             incoming[(ex_date, action_type)] = value       # a duplicated index keeps the last row
+    return incoming
+
+
+def _new_splits(session: Session, asset: Asset, incoming: dict[tuple[date, str], float]) -> set[date]:
+    """Ex-dates of splits in `incoming` that have no stored (ex_date, 'split') row."""
+    splits = {d for d, action_type in incoming if action_type == "split"}
+    if not splits:
+        return set()
+    stored = set(session.execute(
+        select(CorporateAction.ex_date).where(
+            CorporateAction.asset_id == asset.id, CorporateAction.action_type == "split")
+    ).scalars())
+    return splits - stored
+
+
+def _upsert_actions(session: Session, asset: Asset, df: pd.DataFrame, now: datetime) -> UpsertCounts:
+    """
+    Upsert every non-zero dividend and split row of a daily download.
+
+    Unlike OHLCV there is no refresh window: actions are sparse, and yfinance
+    re-states dividend amounts after a later split, so any row may change. An
+    existing (ex_date, action_type) row gets its `value` and `fetched_at`
+    updated only when the value differs. Rows dated after today (IST) are
+    skipped. `now` is the fetch time; a naive value is taken to be UTC.
+    """
+    now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+    return _upsert_incoming(session, asset, _incoming_actions(df, _now_ist(now).date()), now)
+
+
+def _upsert_incoming(
+    session: Session, asset: Asset, incoming: dict[tuple[date, str], float], now: datetime,
+) -> UpsertCounts:
+    """Write `_incoming_actions` rows; `now` is the fetch time (aware, or naive UTC)."""
+    counts = UpsertCounts()
     if not incoming:
         return counts
+    fetched_at = (now if now.tzinfo is None else now.astimezone(timezone.utc)).replace(tzinfo=None)
 
     stored = {
         (r.ex_date, r.action_type): r

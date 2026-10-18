@@ -73,8 +73,20 @@ def cmd_ingest():
         elapsed = (datetime.now() - start).total_seconds()
         logger.info("=" * 60)
         logger.info(f"INGESTION COMPLETE in {elapsed:.0f}s")
-        logger.info(f"  Daily prices:    {price_stats['daily_total']} rows")
-        logger.info(f"  Intraday prices: {price_stats['intraday_total']} rows")
+        for label, key in (("Daily prices:   ", "daily"), ("Intraday prices:", "intraday")):
+            logger.info(
+                f"  {label} inserted {price_stats[key + '_inserted']}, "
+                f"updated {price_stats[key + '_updated']}, "
+                f"rejected {price_stats[key + '_rejected']}"
+            )
+        logger.info(
+            f"  Corporate actions: inserted {price_stats['actions_inserted']}, "
+            f"updated {price_stats['actions_updated']}"
+        )
+        logger.info(
+            f"  Price downloads: {price_stats['full_downloads']} full, "
+            f"{price_stats['incremental_downloads']} incremental"
+        )
         logger.info(f"  Annual financials:    {fin_stats['annual']} records")
         logger.info(f"  Quarterly financials: {fin_stats['quarterly']} records")
         if price_stats['errors'] or fin_stats['errors']:

@@ -36,6 +36,21 @@ DAILY_REFRESH_SESSIONS = 5       # last N trading sessions in the fetched daily 
 INTRADAY_REFRESH_DAYS = 2        # last N trading days in the fetched intraday data
 DAILY_BAR_FINAL_AFTER = "16:00"  # IST; today's daily bar is not stored before this
 
+# An asset that already has stored bars only downloads the last stored bar date minus this
+# overlap, instead of DAILY_PERIOD / INTRADAY_PERIOD. The refresh window is applied to the
+# last N sessions *in the download*, so the overlap must hold at least that many sessions;
+# ingestion checks this and falls back to the full period when it doesn't.
+# 14 calendar days = 10 weekdays, so even a long holiday weekend (Diwali / Holi / Christmas
+# with the surrounding weekends, 4-5 closed days) leaves >= 5 sessions (DAILY_REFRESH_SESSIONS).
+DAILY_INCREMENTAL_OVERLAP_DAYS = 14
+# 5 calendar days always contain >= 2 trading days (INTRADAY_REFRESH_DAYS) unless the market
+# is shut for 4+ days in a row on top of the weekend; the session-count guard covers that.
+INTRADAY_INCREMENTAL_OVERLAP_DAYS = 5
+# yfinance only serves 15m bars from the last 60 days. A start date at exactly 60 days back
+# is rejected (midnight of that date is a few hours more than 60 days ago), so the largest
+# usable start is one day closer.
+INTRADAY_MAX_LOOKBACK_DAYS = 60
+
 # ── Scheduler Intervals (minutes) ────────────────────────
 EQUITY_SCORING_INTERVAL_MIN = 30
 CRYPTO_SCORING_INTERVAL_MIN = 5
