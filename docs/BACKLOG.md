@@ -54,6 +54,16 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] `scorer.py` follow-up: staleness counts business days without an NSE holiday calendar, so a long holiday weekend can read 1 day staler than it is.
 - [ ] The scratch DB still has TATAMOTORS.NS active with no price rows (the seed's `RETIRED_TICKERS` deactivation has not run there, and TMPV.NS is absent). `main.py score` lists it as `no_data`. Check the real DB after the next `setup`.
 
+## Phase 5d: tax and trading
+- [x] `trading/tax_rules.py`, `transaction_costs.py`, `lot_tracker.py`: regime params, FY label, calendar-month holding period, cost calculator, FIFO lots with realisations and unrealised-by-lot (`agent/110-transaction-costs-lots`)
+- [ ] DP charges: add the depository (CDSL/NSDL) charge plus the broker's DP fee per scrip per sell day to `estimate_costs` (not per order). Rate and who bills it needs checking against the broker's contract note.
+- [ ] Align the master plan with the tax decisions: §2.8 4e says specific identification but FIFO is mandated (Circular 768); the `>= 365 days` SQL differs from `is_long_term`; the cost table has no DP charge.
+- [ ] Fiscal-year tax ledger (§2.8 4f) on top of `Realisation`: per-FY STCG/LTCG/STCL/LTCL totals, set-off order (STCL against STCG then LTCG; LTCL against LTCG only), the ₹1.25L exemption, 8-year carry-forward, surcharge and cess.
+- [ ] Tax filter (§2.8 4a/4b, patience window using `days_to_long_term`, effective threshold using `round_trip_cost_pct` and tax drag). Under FIFO it reasons about how much and when to sell, not which lots.
+- [ ] Persist lots (a `tax_lots` table or similar) and wire `sell_fifo` into the paper engine; check the existing schema first.
+- [ ] Equity grandfathering of pre-1 Feb 2018 cost (Section 112A) is not modelled; irrelevant while paper trading starts now.
+- [ ] Brokerage for crypto is the equity flat ₹20 placeholder; model exchange percentage fees when the crypto engine exists.
+
 ## Later phases
 See `CLAUDE.md` → Build order and the master plan.
 
