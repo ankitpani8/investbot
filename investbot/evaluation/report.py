@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from investbot.data.index_membership import HISTORY_START
 from investbot.evaluation.baselines import BASELINE_COLUMNS
 from investbot.evaluation.evaluate import (
     PROMISING_Q,
@@ -91,6 +92,8 @@ class RunInfo:
     coverage_mean: float = math.nan
     coverage_min: float = math.nan
     coverage_min_date: pd.Timestamp | None = None
+    #: OOS dates left out of the coverage numbers (fewer than MIN_NAMES covered members).
+    coverage_skipped_dates: int = 0
     #: Member ticker -> OOS dates as a member, for members with no price rows / too few bars.
     missing_prices: dict[str, int] = field(default_factory=dict)
     short_history: dict[str, int] = field(default_factory=dict)
@@ -287,13 +290,15 @@ def _setup_universe_lines(info: RunInfo) -> list[str]:
         return [f"- Universe: {info.n_assets} active stocks (no point-in-time masking); {span}."]
     lines = [
         f"- Universe: point-in-time {info.index_code} from `index_membership`: "
-        f"{info.n_members} names were members at some point in the window; "
+        f"{info.n_members} names were members at some point since "
+        f"{info.start or HISTORY_START}; "
         f"{info.n_assets} have enough daily bars to compute features (on their full stored "
         f"history; a signal counts only on dates with `IN_UNIVERSE`). {span}.",
         f"- Coverage on OOS dates (members with a finite TECH_SCORE / members): mean "
         f"{_share(info.coverage_mean)}, minimum {_share(info.coverage_min)}"
         + (f" on {info.coverage_min_date:%Y-%m-%d}" if info.coverage_min_date is not None else "")
-        + ".",
+        + f", over the OOS dates with ≥ {MIN_NAMES} covered members (the dates the metrics use; "
+        f"{info.coverage_skipped_dates} OOS dates with fewer, e.g. purged sessions, are left out).",
     ]
     if info.missing_prices:
         lines.append("- Members with **no price rows** (need a human-run ingest; OOS member days "
@@ -407,8 +412,12 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
           "benchmark to the members on each date; *active* scores today's active stocks on every "
           "date. Held net − univ. = held-portfolio CAGR net of costs minus the equal-weight "
           "universe CAGR over the same periods.\n")
-        w(_table(universe_effect(table, compare, ["TECH_SCORE", *families, *BASELINE_COLUMNS]),
-                 _EFFECT_COLS))
+        prom = sorted(set(head.loc[head["promising"], "signal"])
+                      | set(headline(compare).loc[lambda d: d["promising"], "signal"]))
+        w(_table(universe_effect(table, compare,
+                                 ["TECH_SCORE", *families, *BASELINE_COLUMNS,
+                                  *[p for p in prom if p not in SCORE_COLUMNS
+                                    and p not in BASELINE_COLUMNS]]), _EFFECT_COLS))
         flips = _significance_changes(table, compare)
         if not flips.empty:
             w("Tests whose BH significance (q < "
@@ -527,7 +536,10 @@ def _coverage_info(session, index_code: str, start, end, features: pd.DataFrame,
     priced = tickers_with_prices(session, members_all)
     oos_days = member.sum(axis=0)
     dates = features.index.get_level_values("date")
-    c = cov["coverage"]
+    # dates the metrics skip anyway (< MIN_NAMES names with a value, e.g. a purged session
+    # where only a few assets have a bar) would read as a coverage collapse; leave them out
+    evaluated = cov["covered"] >= MIN_NAMES
+    c = cov.loc[evaluated, "coverage"]
     return {
         "n_members": len(members_all),
         "coverage_mean": float(c.mean()) if c.notna().any() else math.nan,
@@ -540,6 +552,7 @@ def _coverage_info(session, index_code: str, start, end, features: pd.DataFrame,
                               .lt(pd.Timestamp(complete_from)).sum()),
         "fallback_oos_dates": int((oos < pd.Timestamp(complete_from)).sum()),
         "complete_from": complete_from,
+        "coverage_skipped_dates": int((~evaluated).sum()),
     }
 
 

@@ -377,13 +377,13 @@ def test_coverage_hand_example():
 
 @pytest.fixture(scope="module")
 def e2e(tmp_path_factory):
-    """11 priced names (one joins, one leaves) + one member with no prices; real run."""
+    """12 priced names (one joins, one leaves) + one member with no prices; real run."""
     pytest.importorskip("talib")
     from investbot.evaluation.report import run_evaluation
 
     root = tmp_path_factory.mktemp("e2e")
     n = 620
-    assets = {f"S{i:02d}.NS": (n, True) for i in range(9)}
+    assets = {f"S{i:02d}.NS": (n, True) for i in range(10)}
     assets.update({"JOIN.NS": (n, True), "LEFT.NS": (n, False), "NOPX.NS": (0, True)})
     stints = [(t, date(2019, 1, 1), None) for t in assets if t not in ("JOIN.NS", "LEFT.NS")]
     stints += [("JOIN.NS", date(2025, 3, 3), None),
@@ -400,7 +400,7 @@ def e2e(tmp_path_factory):
 
 def test_run_evaluation_index_universe_report(e2e):
     report, csv, table, info = e2e
-    assert info.universe == "index" and info.n_members == 12 and info.n_assets == 11
+    assert info.universe == "index" and info.n_members == 13 and info.n_assets == 12
     assert info.missing_prices and set(info.missing_prices) == {"NOPX.NS"}
     assert info.short_history == {}
     md = report.read_text()
@@ -421,10 +421,11 @@ def test_run_evaluation_coverage_numbers(e2e):
     _, _, _, info = e2e
     # every priced name has TECH_SCORE throughout the OOS window (warmup ends ~bar 200),
     # so coverage = priced members / members: NOPX is the only gap.
-    # members: 9 S + NOPX always, LEFT until 2025-02-02, JOIN from 2025-03-03
-    # -> 11 members before 2025-02-03 (10 covered), 10 between (9), 11 from 2025-03-03 (10)
-    assert info.coverage_min == pytest.approx(9 / 10)
+    # members: 10 S + NOPX always, LEFT until 2025-02-02, JOIN from 2025-03-03
+    # -> 12 members before 2025-02-03 (11 covered), 11 between (10), 12 from 2025-03-03 (11)
+    assert info.coverage_skipped_dates == 0
+    assert info.coverage_min == pytest.approx(10 / 11)
     assert info.coverage_min_date >= pd.Timestamp("2025-02-03")
     assert info.coverage_min_date < pd.Timestamp("2025-03-03")
-    assert 9 / 10 < info.coverage_mean < 10 / 11 + 1e-12
+    assert 10 / 11 < info.coverage_mean < 11 / 12 + 1e-12
     assert info.fallback_oos_dates == 0
