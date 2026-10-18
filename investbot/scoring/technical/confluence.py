@@ -294,12 +294,19 @@ COLUMN_FAMILIES: dict[str, str | None] = {
     "SR_RESIST_3": None,
     "SR_DIST_SUPPORT_PCT": SR,
     "SR_DIST_RESIST_PCT": SR,
-    "SR_STRENGTH_SUPPORT": None,
+    "SR_STRENGTH_SUPPORT": None,    # 0-1 share of the nearest level; no rule uses it yet
     "SR_STRENGTH_RESIST": None,
     "VP_POC": None,
     "VP_VAH": None,
     "VP_VAL": None,
     "VP_POS": SR,
+    # VP_DIST is deliberately NOT scored. It is the unclipped version of the
+    # same quantity VP_POS already feeds into the S/R family (position against
+    # the value area), so a second signal would double-count it. An unbounded
+    # ATR-unit distance also needs a squash/scale rule (and a polarity: fade
+    # or follow a breakout?) and that is a tuning choice that waits for
+    # harness evidence. Kept as a column for the evaluation harness and ML.
+    "VP_DIST": None,
     "FIB_236": None,
     "FIB_382": None,
     "FIB_500": None,

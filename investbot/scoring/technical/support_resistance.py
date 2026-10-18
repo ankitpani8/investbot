@@ -34,17 +34,32 @@ S/R levels (``SR_*``)
 ---------------------
 At each bar, take the last ``SR_MAX_PIVOTS`` confirmed pivots (highs and lows
 together, as plain price levels). Sort them by price and cluster greedily:
-a pivot joins the current cluster while it is within ``SR_CLUSTER_PCT`` of
-the cluster's lowest price. Each pivot has recency weight
-``0.5 ** ((t - j) / SR_RECENCY_HALFLIFE)``. A cluster's level is the
-weighted mean of its prices; its strength is the sum of its weights, i.e.
-"recency-weighted touches" (a fresh level with 3 touches ≈ 3.0).
+a pivot joins the current cluster while it is within the tolerance of the
+cluster's lowest price. The tolerance at bar t is
+``SR_CLUSTER_ATR_MULT * ATR_14[t]`` in price units (0.25 ATR), so it scales
+with the asset's own volatility: a calm stock gets fine levels, a wild one
+broad zones. ATR_14 is the module's own causal TA-Lib ATR (Wilder), or the
+``ATR_14`` column if the input frame already has one. ``SR_CLUSTER_PCT`` (a
+percent of the cluster's lowest price) is a **fallback only**: it applies on
+bars where ATR is still NaN (the first ``SR_ATR_PERIOD`` bars, or after a
+missing OHLC value, which TA-Lib propagates), and nowhere else.
+Because the tolerance moves every bar, levels are re-clustered every bar
+(the sort is done once per new pivot).
+
+Each pivot has recency weight ``0.5 ** ((t - j) / SR_RECENCY_HALFLIFE)``. A
+cluster's level is the weighted mean of its prices; its "recency-weighted
+touches" is the sum of its weights. ``SR_STRENGTH_*`` is that sum divided by
+the total weight of **all** pivots in the lookback at bar t, so it is a share
+in [0, 1] comparable across assets and timeframes (the shares of all
+clusters sum to 1; the nearest support and resistance sum to <= 1). The
+common decay factor cancels in the ratio, so a share only changes when a
+pivot enters or leaves the lookback or the clusters re-form.
 
 Clusters at or below the close are supports, those above are resistances,
 each ranked nearest-first: ``SR_SUPPORT_1`` is the nearest support.
 ``SR_DIST_SUPPORT_PCT = (close - SR_SUPPORT_1) / close * 100`` (>= 0) and
 ``SR_DIST_RESIST_PCT = (SR_RESIST_1 - close) / close * 100`` (> 0).
-``SR_STRENGTH_*`` is the strength of the nearest level.
+``SR_STRENGTH_*`` is the share of the nearest level (see above).
 
 Volume profile (``VP_*``)
 -------------------------
@@ -57,6 +72,10 @@ POC towards the heavier neighbour until it holds ``VP_VALUE_AREA`` (70%) of
 volume; ``VP_VAH`` / ``VP_VAL`` are its outer bin edges.
 ``VP_POS = (close - mid) / half_width`` clipped to [-1, +1], where mid and
 half_width describe [VAL, VAH]. A window with any NaN input is NaN.
+``VP_DIST`` is the unclipped companion: the signed distance of the close
+from the value area in ATR_14 units, 0 inside [VAL, VAH], ``(close - VAH) /
+ATR`` above it and ``(close - VAL) / ATR`` below it. NaN where the profile or
+ATR is NaN (or ATR is 0). ``VP_POS`` is unchanged.
 
 Fibonacci (``FIB_*``)
 ---------------------
@@ -83,10 +102,12 @@ the rest is S/R levels, which are re-clustered only when a new pivot confirms.
 """
 from __future__ import annotations
 
+import bisect
 import logging
 
 import numpy as np
 import pandas as pd
+import talib
 from numpy.lib.stride_tricks import sliding_window_view
 
 logger = logging.getLogger(__name__)
@@ -99,7 +120,9 @@ PIVOT_LEFT_BARS = 3
 PIVOT_RIGHT_BARS = 3          # k: confirmation delay in bars
 
 SR_MAX_PIVOTS = 20            # last N confirmed pivots used for levels
-SR_CLUSTER_PCT = 0.5          # percent price tolerance within one cluster
+SR_CLUSTER_ATR_MULT = 0.25    # cluster tolerance = this × ATR_14[t] (price units)
+SR_ATR_PERIOD = 14
+SR_CLUSTER_PCT = 0.5          # FALLBACK only: percent tolerance while ATR is NaN (warmup)
 SR_RECENCY_HALFLIFE = 60.0    # bars; pivot weight halves every this many bars
 SR_LEVELS = 3                 # SR_SUPPORT_1..3, SR_RESIST_1..3
 
@@ -131,6 +154,7 @@ SR_COLUMNS: tuple[str, ...] = (
     "VP_VAH",
     "VP_VAL",
     "VP_POS",
+    "VP_DIST",
     *FIB_RATIOS,
     "FIB_NEAREST_DIST_PCT",
     "FIB_SWING_HIGH",
@@ -158,18 +182,23 @@ def compute_support_resistance_columns(
     pivot_left: int = PIVOT_LEFT_BARS,
     pivot_right: int = PIVOT_RIGHT_BARS,
     sr_max_pivots: int = SR_MAX_PIVOTS,
+    sr_cluster_atr_mult: float = SR_CLUSTER_ATR_MULT,
     sr_cluster_pct: float = SR_CLUSTER_PCT,
     sr_halflife: float = SR_RECENCY_HALFLIFE,
     vp_bins: int = VP_BINS,
     vp_value_area: float = VP_VALUE_AREA,
 ) -> dict[str, np.ndarray]:
-    """Compute all S/R columns. Use ``vp_window=VP_WINDOW_INTRADAY`` for 15m bars."""
+    """Compute all S/R columns. Use ``vp_window=VP_WINDOW_INTRADAY`` for 15m bars.
+
+    ATR_14 is read from ``df["ATR_14"]`` if present, else computed here.
+    """
     _validate(df)
     open_ = df["open"].to_numpy(dtype=float)
     high = df["high"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
     close = df["close"].to_numpy(dtype=float)
     volume = df["volume"].to_numpy(dtype=float)
+    atr = _atr(df, high, low, close)
 
     out: dict[str, np.ndarray] = {}
     piv = swing_pivots(high, low, left=pivot_left, right=pivot_right)
@@ -177,10 +206,11 @@ def compute_support_resistance_columns(
     out.update(sr_levels(
         piv["PIVOT_HIGH"], piv["PIVOT_LOW"], close,
         right=pivot_right, max_pivots=sr_max_pivots,
+        atr=atr, cluster_atr_mult=sr_cluster_atr_mult,
         cluster_pct=sr_cluster_pct, halflife=sr_halflife,
     ))
     out.update(volume_profile(
-        high, low, close, volume,
+        high, low, close, volume, atr,
         window=vp_window, bins=vp_bins, value_area=vp_value_area,
     ))
     out.update(fibonacci(piv["PIVOT_HIGH"], piv["PIVOT_LOW"], open_, close, right=pivot_right))
@@ -222,26 +252,34 @@ def swing_pivots(
 # Clustered S/R levels
 # ──────────────────────────────────────────────────────────
 
-def _cluster(prices: np.ndarray, bars: np.ndarray, cluster_pct: float, halflife: float):
-    """Greedy price clustering. Returns (levels, member-bar arrays) sorted by level.
+def _atr(df: pd.DataFrame, high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """Causal ATR_14: the frame's own column if supplied, else TA-Lib's Wilder ATR."""
+    if f"ATR_{SR_ATR_PERIOD}" in df.columns:
+        return df[f"ATR_{SR_ATR_PERIOD}"].to_numpy(dtype=float)
+    return talib.ATR(high, low, close, timeperiod=SR_ATR_PERIOD)
 
-    Levels use weights relative to the newest pivot. Every weight at bar t
-    is that relative weight times the same factor, so the weighted mean does
-    not depend on t and clusters only change when a pivot is added or dropped.
+
+def _cluster(p: list[float], w: list[float], abs_tol: float, rel_tol: float = 0.0):
+    """Greedy clustering of price-sorted pivots.
+
+    ``p`` ascending prices, ``w`` their weights. A pivot joins the current
+    cluster while ``p <= lowest * (1 + rel_tol) + abs_tol``, where lowest is
+    the cluster's lowest price (ATR mode: ``abs_tol`` only; the percent
+    fallback: ``rel_tol`` only). Returns
+    (levels, cluster weights), both ascending by level; a level is the
+    weighted mean price of its cluster.
     """
-    order = np.argsort(prices, kind="stable")
-    p, b = prices[order], bars[order]
-    w = 0.5 ** ((b.max() - b) / halflife)
     levels: list[float] = []
-    members: list[np.ndarray] = []
+    weights: list[float] = []
     start = 0
-    for i in range(1, len(p) + 1):
-        if i == len(p) or p[i] > p[start] * (1 + cluster_pct / 100.0):
-            sl = slice(start, i)
-            levels.append(float(np.sum(p[sl] * w[sl]) / np.sum(w[sl])))
-            members.append(b[sl])
+    n = len(p)
+    for i in range(1, n + 1):
+        if i == n or p[i] > p[start] * (1.0 + rel_tol) + abs_tol:
+            sw = sum(w[start:i])
+            levels.append(sum(x * y for x, y in zip(p[start:i], w[start:i])) / sw)
+            weights.append(sw)
             start = i
-    return np.array(levels), members
+    return levels, weights
 
 
 def sr_levels(
@@ -251,6 +289,8 @@ def sr_levels(
     *,
     right: int,
     max_pivots: int,
+    atr: np.ndarray,
+    cluster_atr_mult: float,
     cluster_pct: float,
     halflife: float,
 ) -> dict[str, np.ndarray]:
@@ -277,39 +317,46 @@ def sr_levels(
 
     sup = [out[f"SR_SUPPORT_{i}"] for i in range(1, SR_LEVELS + 1)]
     res = [out[f"SR_RESIST_{i}"] for i in range(1, SR_LEVELS + 1)]
-    levels = np.empty(0)
-    level_list: list[float] = []
-    base_strength: list[float] = []   # strength of each level at bar t0
-    t0 = 0
+    sorted_p: list[float] = []
+    sorted_w: list[float] = []
+    total_w = 0.0
     n_now = 0
     for t in range(n):
         n_prev = n_now
         while n_now < conf_arr.size and conf_arr[n_now] <= t:
             n_now += 1
         if n_now != n_prev:
+            # Re-sort only when the pivot set changes. Weights are relative to
+            # the newest pivot; the factor common to all weights at bar t
+            # cancels in the strength share and in the weighted-mean level.
             lo = max(0, n_now - max_pivots)
-            levels, members = _cluster(
-                price_arr[lo:n_now], conf_arr[lo:n_now] - right, cluster_pct, halflife
-            )
-            level_list = levels.tolist()
-            t0 = t
-            base_strength = [float(np.sum(0.5 ** ((t0 - m) / halflife))) for m in members]
+            pr = price_arr[lo:n_now]
+            bars = conf_arr[lo:n_now] - right
+            order = np.argsort(pr, kind="stable")
+            w = 0.5 ** ((bars.max() - bars) / halflife)
+            sorted_p = pr[order].tolist()
+            sorted_w = w[order].tolist()
+            total_w = float(w.sum())
         c = close[t]
-        if not level_list or np.isnan(c):
+        if not sorted_p or np.isnan(c):
             continue
-        # Strengths all decay by the same factor between pivot events.
-        decay = 0.5 ** ((t - t0) / halflife)
-        split = int(np.searchsorted(levels, c, side="right"))   # levels ascending
+        a = atr[t]
+        # Fallback tolerance only while ATR is in warmup (NaN).
+        if np.isnan(a):
+            level_list, weights = _cluster(sorted_p, sorted_w, 0.0, cluster_pct / 100.0)
+        else:
+            level_list, weights = _cluster(sorted_p, sorted_w, cluster_atr_mult * a)
+        split = bisect.bisect_right(level_list, c)   # levels ascending
         for rank in range(min(SR_LEVELS, split)):
             sup[rank][t] = level_list[split - 1 - rank]
         for rank in range(min(SR_LEVELS, len(level_list) - split)):
             res[rank][t] = level_list[split + rank]
         if split > 0:
             out["SR_DIST_SUPPORT_PCT"][t] = (c - level_list[split - 1]) / c * 100.0
-            out["SR_STRENGTH_SUPPORT"][t] = base_strength[split - 1] * decay
+            out["SR_STRENGTH_SUPPORT"][t] = weights[split - 1] / total_w
         if split < len(level_list):
             out["SR_DIST_RESIST_PCT"][t] = (level_list[split] - c) / c * 100.0
-            out["SR_STRENGTH_RESIST"][t] = base_strength[split] * decay
+            out["SR_STRENGTH_RESIST"][t] = weights[split] / total_w
     return out
 
 
@@ -372,6 +419,7 @@ def volume_profile(
     low: np.ndarray,
     close: np.ndarray,
     volume: np.ndarray,
+    atr: np.ndarray,
     *,
     window: int,
     bins: int,
@@ -409,7 +457,12 @@ def volume_profile(
         pos = np.where(half > 0, (close - mid) / np.where(half > 0, half, 1.0), 0.0)
         pos = np.clip(pos, -1.0, 1.0)
     pos[np.isnan(poc) | np.isnan(close)] = np.nan
-    return {"VP_POC": poc, "VP_VAH": vah, "VP_VAL": val, "VP_POS": pos}
+    # Unclipped distance outside the value area, in ATR units (0 inside).
+    with np.errstate(invalid="ignore", divide="ignore"):
+        outside = np.where(close > vah, close - vah, np.where(close < val, close - val, 0.0))
+        dist = np.where(atr > 0, outside / np.where(atr > 0, atr, 1.0), np.nan)
+    dist[np.isnan(poc) | np.isnan(close) | np.isnan(atr)] = np.nan
+    return {"VP_POC": poc, "VP_VAH": vah, "VP_VAL": val, "VP_POS": pos, "VP_DIST": dist}
 
 
 # ──────────────────────────────────────────────────────────

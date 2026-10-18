@@ -16,3 +16,4 @@
 - 2026-10-18 110-regime-confidence-smoothing: `REGIME_CONFIDENCE` is now a causal EMA (span `CONFIDENCE_EMA_SPAN = 5`, adjust=False, restarted after NaN gaps) of the top-two gap, which stays available as `REGIME_CONFIDENCE_RAW`; confluence contract and MTF updated, `SCORER_VERSION` bumped to 2; tests for hand-computed EMA, gap restart, truncation invariance and flip churn
 - 2026-10-18 130-mtf-weights-and-cumret: MTF timeframe weights 1/2/3 (15m/1h/1d); CUMLOGRET_1/CUMPCTRET_1 NaN on gap bars and restart per gap-free segment; SCORER_VERSION 3
 - 2026-10-18 140-nifty50-constituents-sync: NIFTY50_TICKERS synced to the NSE list of 2026-10-18 (duplicate WIPRO removed, 6 names retired, 5 added); tests for duplicates and retired-vs-active
+- 2026-10-18 120-sr-normalisation: S/R strength is now a 0-1 share of total recency weight, cluster tolerance is 0.25 × ATR_14 (pct rule only as ATR-warmup fallback), new unclipped `VP_DIST` (ATR units, not scored), `SCORER_VERSION` 2
