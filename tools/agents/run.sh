@@ -121,6 +121,26 @@ agent_env() {   # run a command with the agent sandbox environment
     "$@"
 }
 
+# Seconds to wait for a usage-limit reset, parsed from Claude's message; default 20 min (cheap to retry).
+limit_wait_seconds() {
+  local out=$1 now epoch t
+  [ -n "${AGENT_LIMIT_WAIT:-}" ] && { echo "$AGENT_LIMIT_WAIT"; return; }   # test hook
+  now=$(date +%s)
+  epoch=$(echo "$out" | grep -oE 'limit reached\|[0-9]{10}' | grep -oE '[0-9]{10}' | tail -1)
+  if [ -z "$epoch" ]; then
+    t=$(echo "$out" | grep -oiE 'resets? (at )?[0-9]{1,2}(:[0-9]{2})? ?(am|pm)' | tail -1 | grep -oiE '[0-9]{1,2}(:[0-9]{2})? ?(am|pm)')
+    if [ -n "$t" ]; then
+      # The message may name its timezone, e.g. "(Asia/Calcutta)"; WSL itself often runs in UTC.
+      local tz; tz=$(echo "$out" | grep -oE '\([A-Za-z_]+/[A-Za-z_]+\)' | tail -1 | tr -d '()')
+      [ "$tz" = "Asia/Calcutta" ] && tz=Asia/Kolkata
+      [ -n "$tz" ] && [ -e "/usr/share/zoneinfo/$tz" ] || tz=Asia/Kolkata
+      epoch=$(TZ="$tz" date -d "today $t" +%s 2>/dev/null)
+      [ -n "$epoch" ] && [ "$epoch" -le "$now" ] && epoch=$((epoch + 86400))
+    fi
+  fi
+  if [ -n "$epoch" ] && [ "$epoch" -gt "$now" ]; then echo $((epoch - now + 120)); else echo 1200; fi
+}
+
 # Returns 0 = finished, 2 = fatal (auth etc.). Sleeps through usage limits.
 run_claude() {   # wt prompt logf model effort
   local wt=$1 prompt=$2 logf=$3 model=$4 effort=$5 cont=0
@@ -135,12 +155,12 @@ run_claude() {   # wt prompt logf model effort
     ( cd "$wt" && agent_env "$wt" timeout "$AGENT_TIMEOUT" claude "${args[@]}" "$msg" ) >>"$logf" 2>&1
     local rc=$?
     local out; out=$(tail -n +"$((start+1))" "$logf")
-    if [ $rc != 0 ] && [ $rc != 124 ] && echo "$out" | tail -15 | grep -qiE 'usage limit|limit reached|rate.limit|out of (extra )?usage|resets? (at|in)'; then
-      local epoch now wait
-      epoch=$(echo "$out" | grep -oE 'limit reached\|[0-9]{10}' | grep -oE '[0-9]{10}' | tail -1)
-      now=$(date +%s)
-      if [ -n "$epoch" ] && [ "$epoch" -gt "$now" ]; then wait=$((epoch - now + 120)); else wait=1800; fi
-      log "Usage limit hit. Sleeping $((wait/60)) min, then resuming."
+    # Usage limit: Claude Code may exit 0 *or* non-zero, so key on the message itself.
+    # Guard against false positives: the agent's normal final answer ends with RESULT:.
+    if ! echo "$out" | grep -q 'RESULT: \(DONE\|BLOCKED\|EMPTY\)' \
+       && echo "$out" | tail -15 | grep -qiE 'usage limit|limit reached|hit your limit|rate.limit|out of (extra )?usage|resets? (at|in)? ?[0-9]'; then
+      local wait; wait=$(limit_wait_seconds "$out")
+      log "Usage limit hit. Sleeping $((wait/60)) min, then resuming the same conversation."
       sleep "$wait"
       cont=1
       continue
