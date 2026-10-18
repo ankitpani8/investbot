@@ -68,6 +68,13 @@ Statistics (all on the harness's out-of-sample dates)
                        and 0.5 per 1000 bars.
     Consecutive bars for flips and churn are consecutive rows of the union
     trading calendar; a row where an asset has no bar breaks the pair.
+
+Point-in-time universe
+    The runner may set a feature cell to NaN where the asset was not an index
+    member on that date (targets are never masked). Every statistic here
+    counts only finite (member) feature cells, and a NaN row breaks a flip or
+    churn pair, so an exit then re-entry is never counted as a label flip or a
+    confidence crossing.
 """
 from __future__ import annotations
 

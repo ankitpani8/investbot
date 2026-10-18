@@ -1,10 +1,10 @@
 """
 Regime study runner: does the real-time regime label predict the ex-post regime?
 
-    python -m scripts.regime_study [--end YYYY-MM-DD]
+    python -m scripts.regime_study [--end YYYY-MM-DD] [--universe index|active]
 
-Loads the active stocks one at a time (``loader.load_daily_history``), computes
-the regime conditioning and the ex-post targets on the real bars and on the
+Loads the stocks one at a time (``loader.load_daily_history``), computes the
+regime conditioning and the ex-post targets on the real bars and on the
 shuffled-returns null (``regime_study.shuffled_null_bars``), keeps only the
 float columns the study reads, runs ``regime_study.run_study`` on the
 harness's out-of-sample dates and writes
@@ -12,6 +12,20 @@ harness's out-of-sample dates and writes
     docs/reports/regime_study_<YYYYMMDD>.md          the report (committed)
     tmp_output/regime_study_tests_<YYYYMMDD>.csv     every tested row (git-ignored)
     tmp_output/regime_study_base_rates_<YYYYMMDD>.csv
+
+Universe (``--universe``, default "index" when ``index_membership`` has rows
+for the index, else "active" with a warning, as ``main.py evaluate``)
+    "index"   every past or present member of the index up to ``end``
+              (``loader.universe_tickers``), the rule of ``panel.build_dataset``:
+              features are computed on each asset's full stored history, then
+              every conditioning feature (real and null) is set to NaN on the
+              dates when the asset was not a member (``point_in_time_membership``,
+              changes effective <= t; before ``COMPLETE_FROM`` "active today").
+              Ex-post targets are never masked: a target window may run past an
+              exit, as the harness labels do. The "active" universe is studied on
+              the same splits for the report's "Universe effect" table.
+    "active"  today's active stocks, unmasked (the pre-260 study, with the
+              survivorship caveat).
 
 An existing report is never overwritten (``_b``, ``_c``, ... suffixes).
 No DB writes, no network.
@@ -23,6 +37,7 @@ import logging
 import math
 import resource
 import subprocess
+import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -31,10 +46,12 @@ import numpy as np
 import pandas as pd
 
 from investbot.config.scoring_weights import REGIME_NAMES
+from investbot.data.index_membership import COMPLETE_FROM
 from investbot.evaluation import regime_study as rs
 from investbot.evaluation.evaluate import PROMISING_Q, PROMISING_SIGN_SHARE
 from investbot.evaluation.labels import HORIZONS as HARNESS_HORIZONS
 from investbot.evaluation.metrics import MIN_NAMES
+from investbot.evaluation.panel import UNIVERSES, point_in_time_membership, universe_coverage
 from investbot.evaluation.report import SURVIVORSHIP_CAVEAT
 from investbot.evaluation.walkforward import MIN_TRAIN_BARS, TEST_MONTHS
 from investbot.scoring.technical import regime as R
@@ -47,6 +64,7 @@ REPORT_DIR = REPO_ROOT / "docs" / "reports"
 CSV_DIR = REPO_ROOT / "tmp_output"
 #: Fewer daily bars than this: no regime label can exist (VOL_LONG warmup) and the asset is skipped.
 MIN_STUDY_BARS: int = R.VOL_LONG + 1
+INDEX_CODE: str = "NIFTY50"
 
 
 def report_paths(report_dir: Path, csv_dir: Path, report_date: date) -> tuple[Path, Path, Path]:
@@ -76,14 +94,56 @@ def peak_rss_mb() -> float:
 # Panel
 # ──────────────────────────────────────────────────────────
 
-def build_study_panels(session, end: date | None = None):
-    """(features, targets, null features, null targets, info) as {column: date × ticker}."""
-    from investbot.evaluation.loader import active_tickers, load_daily_history
+def mask_non_members(frame: pd.DataFrame, member: np.ndarray) -> pd.DataFrame:
+    """A copy of ``frame`` with every column NaN on the rows where ``member`` is False
+    (boolean indexing; rows are kept, nothing is dropped)."""
+    out = frame.copy()
+    out.loc[~np.asarray(member, dtype=bool)] = np.nan
+    return out
+
+
+def _wide4(real: dict, null: dict) -> tuple[dict, dict, dict, dict]:
+    return (rs.to_wide({t: f for t, (f, _) in real.items()}),
+            rs.to_wide({t: y for t, (_, y) in real.items()}),
+            rs.to_wide({t: f for t, (f, _) in null.items()}),
+            rs.to_wide({t: y for t, (_, y) in null.items()}))
+
+
+def build_study_panels(session, end: date | None = None, *, universe: str = "index",
+                       index_code: str = INDEX_CODE, complete_from: date = COMPLETE_FROM,
+                       compare_active: bool = False):
+    """
+    (features, targets, null features, null targets, info) as {column: date × ticker}.
+
+    ``universe="active"``: today's active stocks, unmasked (bit for bit the
+    pre-260 panels). ``universe="index"``: every member of ``index_code`` up to
+    ``end``; features and null features NaN on non-member dates (see the module
+    docstring), targets untouched. ``info["membership"]`` is then the
+    point-in-time membership (union calendar × every member, with or without
+    prices) and, with ``compare_active``, ``info["active_panels"]`` holds the
+    four unmasked panels of today's active stocks (computed in the same pass).
+    Assets with fewer than ``MIN_STUDY_BARS`` bars (or none) are skipped and
+    listed; a member with no history is never filled.
+    """
+    from investbot.evaluation.loader import (
+        active_tickers,
+        load_daily_history,
+        membership_for,
+        tickers_with_prices,
+        universe_tickers,
+    )
+
+    if universe not in UNIVERSES:
+        raise ValueError(f"universe must be one of {UNIVERSES}, not {universe!r}")
+    active = active_tickers(session)
+    active_set = set(active)
+    tickers = active if universe == "active" else universe_tickers(session, index_code, None, end)
 
     real, null = {}, {}
-    skipped, n_rows = [], 0
+    comp_real, comp_null = {}, {}
+    skipped, n_rows, member_rows = [], 0, 0
     first, last = None, None
-    for ticker in active_tickers(session):
+    for ticker in tickers:
         bars = load_daily_history(session, ticker, end)
         if len(bars) < MIN_STUDY_BARS:
             skipped.append(f"{ticker} ({len(bars)} bars)")
@@ -91,16 +151,73 @@ def build_study_panels(session, end: date | None = None):
         n_rows += len(bars)
         first = bars.index[0] if first is None else min(first, bars.index[0])
         last = bars.index[-1] if last is None else max(last, bars.index[-1])
-        real[ticker] = rs.asset_study_frames(bars)
-        null[ticker] = rs.asset_study_frames(rs.shuffled_null_bars(bars))
+        f, y = rs.asset_study_frames(bars)
+        nf, ny = rs.asset_study_frames(rs.shuffled_null_bars(bars))
+        if universe == "index":
+            if compare_active and ticker in active_set:
+                comp_real[ticker], comp_null[ticker] = (f, y), (nf, ny)
+            member = point_in_time_membership(
+                membership_for(session, index_code, [ticker], bars.index), active_set,
+                complete_from)[ticker].to_numpy(dtype=bool)
+            member_rows += int(member.sum())
+            f, nf = mask_non_members(f, member), mask_non_members(nf, member)
+        real[ticker], null[ticker] = (f, y), (nf, ny)
         logger.info("regime study: %s done (%d bars)", ticker, len(bars))
-    info = {"n_assets": len(real), "skipped": skipped, "n_rows": n_rows,
+    info = {"universe": universe, "n_assets": len(real), "skipped": skipped, "n_rows": n_rows,
             "first": first, "last": last}
-    return (rs.to_wide({t: f for t, (f, _) in real.items()}),
-            rs.to_wide({t: y for t, (_, y) in real.items()}),
-            rs.to_wide({t: f for t, (f, _) in null.items()}),
-            rs.to_wide({t: y for t, (_, y) in null.items()}),
-            info)
+    panels = _wide4(real, null)
+    if universe == "index":
+        calendar = (panels[0]["REGIME"].index if panels[0] else pd.DatetimeIndex([]))
+        info.update(
+            index_code=index_code, complete_from=complete_from, n_members=len(tickers),
+            member_rows=member_rows,
+            priced=tickers_with_prices(session, tickers),
+            membership=point_in_time_membership(
+                membership_for(session, index_code, tickers, calendar), active_set,
+                complete_from),
+        )
+        if compare_active:
+            for ticker in (t for t in active if t not in set(tickers)):   # none for NIFTY50
+                bars = load_daily_history(session, ticker, end)
+                if len(bars) < MIN_STUDY_BARS:
+                    continue
+                comp_real[ticker] = rs.asset_study_frames(bars)
+                comp_null[ticker] = rs.asset_study_frames(rs.shuffled_null_bars(bars))
+            info["active_panels"] = _wide4(comp_real, comp_null)
+            info["n_active"] = len(comp_real)
+    return (*panels, info)
+
+
+def coverage_summary(membership: pd.DataFrame, regime_wide: pd.DataFrame, oos,
+                     priced: set[str], complete_from: date = COMPLETE_FROM) -> dict:
+    """
+    Coverage of the point-in-time universe on the OOS dates, as ``report._coverage_info``:
+    per date, members with a finite REGIME / members (``panel.universe_coverage``,
+    members without prices count as uncovered), mean and minimum over the OOS
+    dates with >= ``MIN_NAMES`` covered members (the dates the statistics can
+    use); OOS member days of the members with no price rows and of the priced
+    members not studied (too few bars); calendar and OOS dates before
+    ``complete_from`` (the "active today" fallback).
+    """
+    oos = pd.DatetimeIndex(oos)
+    member = membership.reindex(index=oos, fill_value=False).astype(bool)
+    cov = universe_coverage(member, regime_wide.reindex(index=oos))
+    evaluated = cov["covered"] >= MIN_NAMES
+    c = cov.loc[evaluated, "coverage"]
+    days = member.sum(axis=0)
+    studied = set(regime_wide.columns)
+    cf = pd.Timestamp(complete_from)
+    return {
+        "coverage_mean": float(c.mean()) if c.notna().any() else math.nan,
+        "coverage_min": float(c.min()) if c.notna().any() else math.nan,
+        "coverage_min_date": c.idxmin() if c.notna().any() else None,
+        "coverage_skipped_dates": int((~evaluated).sum()),
+        "missing_prices": {t: int(days[t]) for t in membership.columns if t not in priced},
+        "short_history": {t: int(days[t]) for t in membership.columns
+                          if t in priced and t not in studied},
+        "fallback_dates": int((membership.index < cf).sum()),
+        "fallback_oos_dates": int((oos < cf).sum()),
+    }
 
 
 # ──────────────────────────────────────────────────────────
@@ -171,8 +288,150 @@ def _verdict_paragraph(tests: pd.DataFrame, title: str, what: str) -> str:
     return f"**{title}.** {what} Result: {head}. " + "; ".join(parts) + ".\n"
 
 
+def _share(x) -> str:
+    return _f(x * 100 if x is not None and np.isfinite(x) else math.nan, "{:.1f}%")
+
+
+def universe_note(info: dict) -> str:
+    """Header note: the survivorship caveat for "active", the coverage note for "index"."""
+    if info.get("universe", "active") != "index":
+        return SURVIVORSHIP_CAVEAT
+    text = (f"**Universe: point-in-time {info['index_code']}.** A stock's regime features count "
+            f"only on dates when it was an index member (`index_membership`, changes effective "
+            f"on or before the date); names that left the index count for the periods they were "
+            f"members. OOS coverage (members with a finite REGIME / members, per date): mean "
+            f"{_share(info.get('coverage_mean'))}, minimum {_share(info.get('coverage_min'))}"
+            + (f" ({info['coverage_min_date']:%Y-%m-%d})"
+               if info.get("coverage_min_date") is not None else "") + ".")
+    cmin = info.get("coverage_min", math.nan)
+    if np.isfinite(cmin) and cmin < 1.0:
+        gaps = [t for t, n in {**info.get("missing_prices", {}),
+                               **info.get("short_history", {})}.items() if n]
+        text += (" **Coverage is below 100%:** members without usable price history (or still "
+                 "in REGIME warmup) are left out on those dates, so a residual survivorship bias "
+                 "remains" + (f" (no usable prices during the OOS window: {', '.join(gaps)})"
+                              if gaps else "") + ".")
+    if info.get("fallback_oos_dates"):
+        text += (f" {info['fallback_oos_dates']} OOS dates fall before {info['complete_from']} "
+                 "and use today's active stocks.")
+    return text
+
+
+def _setup_universe_lines(info: dict, end: date | None) -> list[str]:
+    span = (f"{info['n_rows']} daily bars, {info['first']:%Y-%m-%d} → {info['last']:%Y-%m-%d}"
+            + (f" (`--end {end}`)" if end else ""))
+    if info.get("universe", "active") != "index":
+        lines = [f"- Universe: {info['n_assets']} active stocks (today's NIFTY50 constituents, "
+                 f"see the survivorship caveat above); {span}."]
+        if info["skipped"]:
+            lines.append(f"- Skipped (< {MIN_STUDY_BARS} bars): {', '.join(info['skipped'])}.")
+        return lines
+    lines = [
+        f"- Universe: point-in-time {info['index_code']} from `index_membership`: "
+        f"{info['n_members']} names were members at some point up to the last bar, "
+        f"{len(info['priced'])} of them have price rows and {info['n_assets']} have ≥ "
+        f"{MIN_STUDY_BARS} bars and are studied; {span}. The conditioning features (REGIME, "
+        "the confidence spans, REGIME_SCORE_TREND/CHAOS, HURST_100, VOL_RATIO) are computed on "
+        "each asset's full stored history and set to NaN on the dates when it was not a member, "
+        "on the real and the shuffled-null panel alike "
+        f"({info['member_rows']} member bars of {info['n_rows']}). The ex-post targets are never "
+        "masked: a target window may run past an exit, as the harness labels do.",
+        f"- Coverage on OOS dates (members with a finite REGIME / members): mean "
+        f"{_share(info.get('coverage_mean'))}, minimum {_share(info.get('coverage_min'))}"
+        + (f" on {info['coverage_min_date']:%Y-%m-%d}"
+           if info.get("coverage_min_date") is not None else "")
+        + f", over the OOS dates with ≥ {MIN_NAMES} covered members "
+        f"({info.get('coverage_skipped_dates', 0)} OOS dates with fewer are left out).",
+    ]
+    if info.get("missing_prices"):
+        lines.append("- Members with **no price rows** (never filled; OOS member days in "
+                     "brackets): " + ", ".join(f"{t} ({n})" for t, n in
+                                               sorted(info["missing_prices"].items())) + ".")
+    if info.get("short_history"):
+        lines.append(f"- Members with price rows but < {MIN_STUDY_BARS} bars, skipped (OOS "
+                     "member days): " + ", ".join(f"{t} ({n})" for t, n in
+                                                  sorted(info["short_history"].items())) + ".")
+    lines.append(f"- Membership before {info['complete_from']} is not sourced and falls back to "
+                 f"today's active stocks: {info.get('fallback_dates', 0)} calendar dates "
+                 f"({info.get('fallback_oos_dates', 0)} OOS).")
+    if "n_active" in info:
+        lines.append(f"- Comparison universe \"active\": the {info['n_active']} active stocks "
+                     f"with ≥ {MIN_STUDY_BARS} bars, unmasked (the pre-260 study), on the same "
+                     "walk-forward splits; see \"Universe effect\".")
+    return lines
+
+
+_KEYS = ["section", "group", "name", "target", "horizon"]
+
+
+def universe_effect(index_tests: pd.DataFrame, active_tests: pd.DataFrame) -> pd.DataFrame:
+    """Every pre-registered test: statistic, NW t, BH q and verdict in both universes."""
+    cols = [*_KEYS, "mean", "t_nw", "q", "verdict"]
+    m = index_tests[cols].merge(active_tests[cols], on=_KEYS, how="outer",
+                                suffixes=("_index", "_active"), sort=False)
+    m["changed"] = m["verdict_index"] != m["verdict_active"]
+    return m
+
+
+def _test_label(r) -> str:
+    return f"{r['group']} {r['name']} → {r['target']}"
+
+
+def _universe_effect_section(res: rs.StudyResult, compare: rs.StudyResult) -> list[str]:
+    out = ["## Universe effect\n",
+           "Every pre-registered test (H1–H5) in the point-in-time *index* universe (the headline "
+           "above) and in today's *active* stocks, unmasked (the universe of the pre-260 "
+           "study), on the same walk-forward splits and OOS dates, each with its own BH "
+           f"adjustment over its {len(res.tests)} tests. Statistic: mean paired difference "
+           "(H1–H3) or mean daily IC (H4, H5).\n"]
+    ue = universe_effect(res.tests, compare.tests)
+    ue["test"] = [_test_label(r) for _, r in ue.iterrows()]
+    out.append(_table(ue, [
+        ("test", "test", str), ("H", "horizon", _i),
+        ("stat index", "mean_index", lambda x: _f(x, "{:+.4f}")), ("t index", "t_nw_index", _t),
+        ("q index", "q_index", _q), ("verdict index", "verdict_index", str),
+        ("stat active", "mean_active", lambda x: _f(x, "{:+.4f}")),
+        ("t active", "t_nw_active", _t), ("q active", "q_active", _q),
+        ("verdict active", "verdict_active", str),
+    ]))
+    changed = ue[ue["changed"]]
+    if changed.empty:
+        out.append("**No verdict changes between the universes.**\n")
+    else:
+        out.append("**Verdicts that change between the universes:** "
+                   + "; ".join(f"{r['test']} (H {r['horizon']}): {r['verdict_active']} (active) "
+                               f"→ {r['verdict_index']} (index)" for _, r in changed.iterrows())
+                   + ".\n")
+    counts = {u: ue[f"verdict_{u}"].value_counts() for u in ("index", "active")}
+    out.append("Verdict counts: " + "; ".join(
+        f"{u}: " + ", ".join(f"{counts[u].get(k, 0)} {k}"
+                            for k in ("supported", "not supported", "wrong sign"))
+        for u in ("index", "active")) + ".\n")
+    return out
+
+
+def _repro_line(info: dict, git_hash: str, elapsed_s: float, rss_mb: float) -> str:
+    db = info.get("db") or {}
+    db_txt = (f"DB: max price date {db.get('db_max_date')}, {db.get('db_price_rows')} "
+              f"price rows, {db.get('db_action_rows')} corporate-action rows"
+              if db else "DB: not recorded")
+    rt = f"runtime {elapsed_s:.0f} s"
+    if "active_s" in info:
+        own = elapsed_s - info["active_s"]
+        rt += (f" ({info['active_s']:.0f} s of it for the active-universe comparison"
+               + ("; running both universes more than doubles the runtime of the index study "
+                  "alone" if info["active_s"] > own else "") + ")")
+    return f"- SCORER_VERSION {SCORER_VERSION}; git `{git_hash}`; {db_txt}; {rt}; " \
+           f"peak RSS {rss_mb:.0f} MB."
+
+
 def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
-                  elapsed_s: float, rss_mb: float, git_hash: str, end: date | None) -> str:
+                  elapsed_s: float, rss_mb: float, git_hash: str, end: date | None,
+                  compare: rs.StudyResult | None = None) -> str:
+    """``info["universe"]`` "index" adds the coverage note and, with ``compare`` (the
+    active universe on the same splits), the "Universe effect" table; "active" (or
+    missing) gives the pre-260 layout with the survivorship caveat."""
+    index_mode = info.get("universe", "active") == "index"
     out: list[str] = []
     w = out.append
     tests = res.tests.copy()
@@ -183,18 +442,16 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
     span_now = R.CONFIDENCE_EMA_SPAN
 
     w(f"# Regime study {report_date:%Y-%m-%d}: real-time regime label vs the ex-post regime\n")
-    w(f"> {SURVIVORSHIP_CAVEAT}\n")
+    w(f"> {universe_note(info)}\n")
     w("Generated by `python -m scripts.regime_study` (`investbot/evaluation/regime_study.py`). "
       "A study only: no threshold, span or weight is changed, and nothing here recommends new "
       "constants. Hypotheses, expected signs, horizons, spans and the null seed were "
       "pre-registered in the module docstring before the first run.\n")
 
     w("## Setup\n")
-    w(f"- Universe: {info['n_assets']} active stocks (today's NIFTY50 constituents, see the "
-      f"survivorship caveat above); {info['n_rows']} daily bars, "
-      f"{info['first']:%Y-%m-%d} → {info['last']:%Y-%m-%d}"
-      + (f" (`--end {end}`)" if end else "") + ".")
-    if info["skipped"]:
+    for line in _setup_universe_lines(info, end):
+        w(line)
+    if index_mode and info["skipped"]:
         w(f"- Skipped (< {MIN_STUDY_BARS} bars): {', '.join(info['skipped'])}.")
     oos = res.oos
     if len(oos):
@@ -220,8 +477,7 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
       f"of them. **Supported** = expected sign, BH q < {PROMISING_Q:.2f} and the expected sign "
       f"in ≥ {PROMISING_SIGN_SHARE:.0%} of the test blocks; **wrong sign** = opposite sign with "
       f"q < {PROMISING_Q:.2f}.")
-    w(f"- SCORER_VERSION {SCORER_VERSION}; git `{git_hash}`; runtime {elapsed_s:.0f} s; "
-      f"peak RSS {rss_mb:.0f} MB.")
+    w(_repro_line(info, git_hash, elapsed_s, rss_mb))
     w("")
 
     # ── Base rates
@@ -323,6 +579,10 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
                          "Higher REGIME_CONFIDENCE (each span) means the trend/range label is "
                          "more often right."))
 
+    if index_mode and compare is not None:
+        for line in _universe_effect_section(res, compare):
+            w(line)
+
     w("## Options for Ankit\n")
     w("This report does not recommend new constants. The choices it informs:\n")
     w("1. **Keep the thresholds and span as they are** (`regime.py` unchanged; current state).")
@@ -338,7 +598,13 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
     w("")
 
     w("## Caveats\n")
-    w(f"- {SURVIVORSHIP_CAVEAT}")
+    if index_mode:
+        w("- Residual survivorship: members without price rows (or with too few bars) are left "
+          "out on their member dates (see Setup); the coverage note at the top gives the share "
+          "of members studied. Before "
+          f"{info['complete_from']} membership falls back to today's active stocks.")
+    else:
+        w(f"- {SURVIVORSHIP_CAVEAT}")
     w("- The targets overlap heavily (consecutive dates share H − 1 bars, 99 for "
       "FWD_HURST_100), so the effective sample is far smaller than the number of days; the "
       "Newey-West t accounts for this only approximately, especially for H = 60 and 100 bars "
@@ -355,30 +621,54 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
     return "\n".join(out) + "\n"
 
 
-def run(end: date | None = None, *, session=None, report_dir: Path = REPORT_DIR,
-        csv_dir: Path = CSV_DIR, report_date: date | None = None) -> tuple[Path, rs.StudyResult]:
+def run(end: date | None = None, *, universe: str = "index", index_code: str = INDEX_CODE,
+        session=None, report_dir: Path = REPORT_DIR, csv_dir: Path = CSV_DIR,
+        report_date: date | None = None,
+        complete_from: date = COMPLETE_FROM) -> tuple[Path, rs.StudyResult]:
+    """Build the panels, run the study, write the report and CSVs. With
+    ``universe="index"`` the active universe is also studied on the same splits."""
+    from investbot.evaluation.loader import db_fingerprint
+
     t0 = time.monotonic()
     own = session is None
     if own:
         from investbot.data.db import SessionLocal
         session = SessionLocal()
     try:
-        feats, tg, nfeats, ntg, info = build_study_panels(session, end)
+        feats, tg, nfeats, ntg, info = build_study_panels(
+            session, end, universe=universe, index_code=index_code,
+            complete_from=complete_from, compare_active=(universe == "index"))
+        info["db"] = db_fingerprint(session)
     finally:
         if own:
             session.close()
     if not feats:
         raise RuntimeError("no assets with enough daily bars for the regime study")
     res = rs.run_study(feats, tg, nfeats, ntg)
+    compare = None
+    if universe == "index":
+        info.update(coverage_summary(info.pop("membership"), feats["REGIME"], res.oos,
+                                     info["priced"], complete_from))
+        t_cmp = time.monotonic()
+        afeats, atg, anfeats, antg = info.pop("active_panels")
+        if afeats:
+            compare = rs.run_study(afeats, atg, anfeats, antg, splits=res.splits)
+        del afeats, atg, anfeats, antg
+        # the active frames come out of the same per-asset pass, so this is the extra cost
+        info["active_s"] = time.monotonic() - t_cmp
     report_date = report_date or date.today()
     report_dir.mkdir(parents=True, exist_ok=True)
     csv_dir.mkdir(parents=True, exist_ok=True)
     report, tests_csv, rates_csv = report_paths(report_dir, csv_dir, report_date)
-    res.tests.to_csv(tests_csv, index=False)
+    tests_out = res.tests if compare is None else pd.concat(
+        [res.tests.assign(universe="index"), compare.tests.assign(universe="active")],
+        ignore_index=True)
+    tests_out.to_csv(tests_csv, index=False)
     pd.concat([res.base_rates_real.assign(panel="real"),
                res.base_rates_null.assign(panel="null")]).to_csv(rates_csv, index=False)
     text = render_report(res, info, report_date, elapsed_s=time.monotonic() - t0,
-                         rss_mb=peak_rss_mb(), git_hash=git_short_hash(), end=end)
+                         rss_mb=peak_rss_mb(), git_hash=git_short_hash(), end=end,
+                         compare=compare)
     report.write_text(text, encoding="utf-8")
     return report, res
 
@@ -387,12 +677,34 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--end", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(), default=None,
                     help="last bar date to load (default: all)")
+    ap.add_argument("--universe", choices=UNIVERSES, default=None,
+                    help="index: point-in-time members (default when index_membership has "
+                         "rows); active: today's active stocks, unmasked")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
     logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
-    report, res = run(args.end)
+
+    from investbot.data.db import SessionLocal
+    from investbot.evaluation.loader import has_index_membership
+
+    session = SessionLocal()
+    try:
+        has_members = has_index_membership(session, INDEX_CODE)
+        universe = args.universe
+        if universe is None:
+            universe = "index" if has_members else "active"
+            if not has_members:
+                print(f"\n  WARNING: index_membership has no {INDEX_CODE} rows (run "
+                      "`python main.py setup`); studying today's active stocks instead, "
+                      "with survivorship bias.\n")
+        elif universe == "index" and not has_members:
+            print(f"index_membership has no {INDEX_CODE} rows; run `python main.py setup` first")
+            sys.exit(1)
+        report, res = run(args.end, universe=universe, session=session)
+    finally:
+        session.close()
     counts = res.tests["verdict"].value_counts().to_dict()
-    print(f"\n  Report: {report}\n  Verdicts: {counts}")
+    print(f"\n  Report: {report}\n  Universe: {universe}\n  Verdicts: {counts}")
 
 
 if __name__ == "__main__":
