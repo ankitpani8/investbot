@@ -21,6 +21,13 @@ Then, on the headline rows (label "open", subset "oos") only:
 Every row with quintile metrics also has the open-to-open held portfolio
 (``held_*``, from ``FWD_OO_RET_h``) next to the open→close ``lo_*`` check.
 
+Universe masking: when the features carry ``IN_UNIVERSE`` (``universe="index"``),
+every signal cell outside the universe on its date becomes NaN (``where``, no
+dropna) before IC, buckets and portfolios, baselines included, and so does the
+label used there, so the equal-weight universe benchmark is the members on the
+rebalance date. A member's label still reaches past its exit date. Without the
+column nothing is masked (``universe="active"``).
+
 Nothing is fitted, and a signal's polarity is used as designed: a significant
 negative IC is reported as such (``direction``), not flipped.
 """
@@ -41,7 +48,7 @@ from investbot.evaluation.metrics import (
     pooled_ic,
     signal_metrics,
 )
-from investbot.evaluation.panel import signal_columns
+from investbot.evaluation.panel import UNIVERSE_COLUMN, signal_columns
 from investbot.evaluation.stats import bh_adjust
 from investbot.evaluation.walkforward import Split, oos_dates, walk_forward_splits
 
@@ -53,9 +60,21 @@ PROMISING_SIGN_SHARE: float = 0.70
 CALENDAR_COLUMN: str = "TECH_SCORE"
 
 
+def universe_mask(features: pd.DataFrame) -> pd.Series | None:
+    """``IN_UNIVERSE`` as a bool Series (missing cells = False), or None without the column."""
+    if UNIVERSE_COLUMN not in features.columns:
+        return None
+    return features[UNIVERSE_COLUMN].eq(True)
+
+
 def evaluation_calendar(features: pd.DataFrame, min_names: int = MIN_NAMES) -> pd.DatetimeIndex:
-    """Dates from the first one where ``CALENDAR_COLUMN`` has >= min_names values."""
-    counts = features[CALENDAR_COLUMN].notna().groupby(level="date").sum()
+    """Dates from the first one where ``CALENDAR_COLUMN`` has >= min_names values
+    (inside the universe when ``IN_UNIVERSE`` is present)."""
+    col = features[CALENDAR_COLUMN]
+    mask = universe_mask(features)
+    if mask is not None:
+        col = col.where(mask)
+    counts = col.notna().groupby(level="date").sum()
     dates = pd.DatetimeIndex(counts.index)
     usable = counts.to_numpy() >= min_names
     if not usable.any():
@@ -65,6 +84,19 @@ def evaluation_calendar(features: pd.DataFrame, min_names: int = MIN_NAMES) -> p
 
 def _wide(series: pd.Series, dates: pd.DatetimeIndex, tickers) -> pd.DataFrame:
     return series.unstack("ticker").reindex(index=dates, columns=tickers)
+
+
+def universe_frame(features: pd.DataFrame, dates: pd.DatetimeIndex, tickers) -> pd.DataFrame | None:
+    """Wide (dates × tickers) bool ``IN_UNIVERSE`` (absent cells False), or None without it."""
+    mask = universe_mask(features)
+    if mask is None:
+        return None
+    return _wide(mask.astype(np.float64), dates, tickers).eq(1.0)
+
+
+def apply_universe(frame: pd.DataFrame, U: pd.DataFrame | None) -> pd.DataFrame:
+    """Cells outside the universe become NaN (``where``, nothing dropped); no-op if U is None."""
+    return frame if U is None else frame.where(U)
 
 
 def evaluate(
@@ -83,18 +115,25 @@ def evaluate(
     if splits is None:
         splits = walk_forward_splits(cal, embargo=max(horizons))
     oos = oos_dates(splits)
+    if not oos.isin(cal).all():        # splits from another universe's calendar
+        cal = cal.union(oos)
     tickers = sorted(features.index.get_level_values("ticker").unique())
     signals = signals if signals is not None else signal_columns(features)
 
     regime = _wide(features["REGIME"], cal, tickers)
-    ys = {(kind, h): _wide(labels[f"{col}_{h}"], cal, tickers)
+    U = universe_frame(features, cal, tickers)
+
+    def in_universe(frame: pd.DataFrame) -> pd.DataFrame:
+        return apply_universe(frame, U)
+
+    ys = {(kind, h): in_universe(_wide(labels[f"{col}_{h}"], cal, tickers))
           for h in horizons for kind, col in (("open", "FWD_RET"), ("close", "FWD_CC_RET"),
                                               ("oo", "FWD_OO_RET"))}
     years = sorted(set(oos.year))
 
     rows: list[dict] = []
     for sig in signals:
-        S = _wide(features[sig], cal, tickers)
+        S = in_universe(_wide(features[sig], cal, tickers))
         if not np.isfinite(S.to_numpy(dtype=np.float64)).any():
             continue                       # e.g. TECH_SCORE_MTF on daily-only frames
         for h in horizons:

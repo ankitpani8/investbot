@@ -12,6 +12,9 @@ Usage:
     python main.py score [TICKER] [--timeframe 1d|15m] [--as-of YYYY-MM-DD] [--no-cache]
                               # Technical scores, ranked (one asset in detail with TICKER)
     python main.py evaluate [--horizons 1,5,20] [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+                            [--universe index|active]
+                              # index (default when index_membership has NIFTY50 rows): point-in-time
+                              # members, plus the active universe on the same splits for comparison
                               # Walk-forward forward-return evaluation → docs/reports/eval_<date>.md
 """
 import sys
@@ -310,10 +313,12 @@ def cmd_score():
 
 def cmd_evaluate():
     """Walk-forward forward-return evaluation of every technical signal and the baselines."""
-    from investbot.evaluation.report import SURVIVORSHIP_CAVEAT, run_evaluation
+    from investbot.evaluation.loader import has_index_membership
+    from investbot.evaluation.report import run_evaluation, universe_note
 
+    index_code = "NIFTY50"
     args = sys.argv[2:]
-    opts = {"--horizons": "1,5,20", "--start": None, "--end": None}
+    opts = {"--horizons": "1,5,20", "--start": None, "--end": None, "--universe": None}
     i = 0
     while i < len(args):
         if args[i] in opts and i + 1 < len(args):
@@ -325,16 +330,32 @@ def cmd_evaluate():
     horizons = tuple(int(h) for h in opts["--horizons"].split(",") if h.strip())
     start = datetime.strptime(opts["--start"], "%Y-%m-%d").date() if opts["--start"] else None
     end = datetime.strptime(opts["--end"], "%Y-%m-%d").date() if opts["--end"] else None
+    universe = opts["--universe"]
+    if universe not in (None, "index", "active"):
+        print(f"--universe must be index or active, not {universe!r}")
+        sys.exit(1)
 
     logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
     session = SessionLocal()
     try:
-        logger.info("Evaluating horizons %s (one asset at a time)...", horizons)
-        report, csv, table = run_evaluation(horizons, start, end, session=session)
+        has_members = has_index_membership(session, index_code)
+        if universe is None:
+            universe = "index" if has_members else "active"
+            if not has_members:
+                print(f"\n  WARNING: index_membership has no {index_code} rows (run "
+                      "`python main.py setup`); evaluating today's active stocks instead, "
+                      "with survivorship bias.\n")
+        elif universe == "index" and not has_members:
+            print(f"index_membership has no {index_code} rows; run `python main.py setup` first")
+            sys.exit(1)
+        logger.info("Evaluating horizons %s, universe %s (one asset at a time)...",
+                    horizons, universe)
+        report, csv, table, info = run_evaluation(horizons, start, end, session=session,
+                                                  universe=universe, index_code=index_code)
     finally:
         session.close()
     n_prom = int(table["promising"].sum())
-    print(f"\n  {SURVIVORSHIP_CAVEAT.replace('**', '')}\n")
+    print(f"\n  {universe_note(info).replace('**', '')}\n")
     print(f"  Report:  {report}")
     print(f"  Metrics: {csv}")
     print(f"  Promising signal × horizon tests: {n_prom}\n")

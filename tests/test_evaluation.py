@@ -158,7 +158,8 @@ def test_build_dataset_separates_features_and_labels(tmp_path):
 
     s = _make_db(tmp_path / "e.db", {"AAA.NS": 300, "BBB.NS": 300, "TINY.NS": 5})
     try:
-        feats, labels = build_dataset(start=pd.Timestamp("2026-01-01").date(), session=s)
+        feats, labels = build_dataset(start=pd.Timestamp("2026-01-01").date(), session=s,
+                                      universe="active")
     finally:
         s.close()
     assert feats.index.names == ["date", "ticker"]

@@ -5,7 +5,14 @@ Markdown report and CSV for one evaluation run (``python main.py evaluate``).
 evaluates it and writes
 
     docs/reports/eval_<YYYYMMDD>.md        the report (committed)
-    tmp_output/eval_metrics_<YYYYMMDD>.csv every metrics row (git-ignored)
+    tmp_output/eval_metrics_<YYYYMMDD>.csv every metrics row (git-ignored), with a
+                                           ``universe`` column
+
+With ``universe="index"`` the point-in-time index universe is the headline and
+the "active" universe (today's active stocks, unmasked) is evaluated on the
+same walk-forward splits for the "Universe effect" table. Features are
+computed once: the active panel is the index panel restricted to active
+tickers, without ``IN_UNIVERSE`` (identical to ``build_dataset(universe="active")``).
 
 An existing report is never overwritten: a second run on the same day writes
 ``eval_<YYYYMMDD>_b.md`` (then ``_c``, ...).
@@ -16,8 +23,9 @@ from __future__ import annotations
 
 import logging
 import math
+import resource
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -40,8 +48,14 @@ from investbot.evaluation.metrics import (
     SLIPPAGE_PER_SIDE,
     statutory_round_trip_cost,
 )
-from investbot.evaluation.panel import SCORE_COLUMNS, build_dataset
-from investbot.evaluation.walkforward import MIN_TRAIN_BARS, TEST_MONTHS, Split
+from investbot.evaluation.panel import (
+    SCORE_COLUMNS,
+    UNIVERSE_COLUMN,
+    build_dataset,
+    point_in_time_membership,
+    universe_coverage,
+)
+from investbot.evaluation.walkforward import MIN_TRAIN_BARS, TEST_MONTHS, Split, oos_dates
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +64,14 @@ REPORT_DIR = REPO_ROOT / "docs" / "reports"
 CSV_DIR = REPO_ROOT / "tmp_output"
 TOP_N = 15
 
+#: Caveat for the "active" universe (today's constituents back-filled); the
+#: "index" universe replaces it with ``universe_note`` (coverage-based).
 SURVIVORSHIP_CAVEAT = (
     "**Survivorship bias.** The universe is *today's* NIFTY50 constituents, back-filled over the "
     "whole history. Names that were dropped from the index (usually after underperforming) are "
     "missing and names that were added (usually after outperforming) are present before they "
     "joined. Absolute returns, and any signal correlated with past winners, are biased upward. "
-    "Historical constituents are an open data task in docs/BACKLOG.md."
+    "Run with `--universe index` for the point-in-time universe."
 )
 
 
@@ -67,6 +83,50 @@ class RunInfo:
     horizons: tuple[int, ...]
     start: date | None
     elapsed_s: float = math.nan
+    universe: str = "active"
+    index_code: str = "NIFTY50"
+    #: Index members at any point in the panel window (with or without prices).
+    n_members: int = 0
+    #: Per-OOS-date share of members with a finite TECH_SCORE (``panel.universe_coverage``).
+    coverage_mean: float = math.nan
+    coverage_min: float = math.nan
+    coverage_min_date: pd.Timestamp | None = None
+    #: Member ticker -> OOS dates as a member, for members with no price rows / too few bars.
+    missing_prices: dict[str, int] = field(default_factory=dict)
+    short_history: dict[str, int] = field(default_factory=dict)
+    #: Panel dates before COMPLETE_FROM (membership fell back to "active") and how many are OOS.
+    fallback_dates: int = 0
+    fallback_oos_dates: int = 0
+    complete_from: date | None = None
+    n_active: int = 0
+    peak_rss_mb: float = math.nan
+
+
+def universe_note(info: RunInfo) -> str:
+    """Header caveat: the survivorship caveat for "active", coverage for "index"."""
+    if info.universe != "index":
+        return SURVIVORSHIP_CAVEAT
+    text = (f"**Universe: point-in-time {info.index_code}.** A stock is scored only on dates "
+            f"when it was an index member (`index_membership`, changes effective on or before "
+            f"the date); names that left the index count for the periods they were members. "
+            f"OOS coverage (members with a TECH_SCORE / members, per date): mean "
+            f"{_share(info.coverage_mean)}, minimum {_share(info.coverage_min)}"
+            + (f" ({info.coverage_min_date:%Y-%m-%d})" if info.coverage_min_date is not None
+               else "") + ".")
+    if np.isfinite(info.coverage_mean) and info.coverage_min < 1.0:
+        oos_missing = [t for t, n in {**info.missing_prices, **info.short_history}.items() if n]
+        text += (" **Coverage is below 100%:** members without usable price history (or still in "
+                 "TECH_SCORE warmup) are left out on those dates, so a residual survivorship bias "
+                 "remains" + (f" (no usable prices during the OOS window: {', '.join(oos_missing)})"
+                              if oos_missing else "") + ".")
+    if info.fallback_oos_dates:
+        text += (f" {info.fallback_oos_dates} OOS dates fall before {info.complete_from} and use "
+                 "today's active stocks.")
+    return text
+
+
+def _share(x: float) -> str:
+    return "–" if x is None or not np.isfinite(x) else f"{x:.1%}"
 
 
 # ──────────────────────────────────────────────────────────
@@ -194,8 +254,66 @@ def verdict_lines(head: pd.DataFrame, horizons) -> list[str]:
 # Report
 # ──────────────────────────────────────────────────────────
 
+def universe_effect(index_table: pd.DataFrame, active_table: pd.DataFrame,
+                    names: list[str]) -> pd.DataFrame:
+    """Headline mean IC, ICIR and held net excess CAGR (net − universe) under both universes."""
+    cols = ["signal", "horizon", "n_days", "ic_mean", "icir", "held_cagr_net",
+            "held_cagr_universe"]
+    a = headline(index_table)[cols]
+    b = headline(active_table)[cols]
+    m = a.merge(b, on=["signal", "horizon"], how="outer", suffixes=("_index", "_active"))
+    for u in ("index", "active"):
+        m[f"held_excess_{u}"] = m[f"held_cagr_net_{u}"] - m[f"held_cagr_universe_{u}"]
+    m["d_ic"] = m["ic_mean_index"] - m["ic_mean_active"]
+    return _order(m, names)
+
+
+_EFFECT_COLS = [
+    ("signal", "signal", _s), ("h", "horizon", _int),
+    ("mean IC index", "ic_mean_index", _f), ("mean IC active", "ic_mean_active", _f),
+    ("Δ IC", "d_ic", _f),
+    ("ICIR index", "icir_index", _f), ("ICIR active", "icir_active", _f),
+    ("held net − univ. index", "held_excess_index", _pct),
+    ("held net − univ. active", "held_excess_active", _pct),
+    ("CAGR univ. index", "held_cagr_universe_index", _pct),
+    ("CAGR univ. active", "held_cagr_universe_active", _pct),
+]
+
+
+def _setup_universe_lines(info: RunInfo) -> list[str]:
+    span = (f"Bars {info.first_date:%Y-%m-%d} → {info.last_date:%Y-%m-%d}"
+            + (f"; panel from {info.start}" if info.start else ""))
+    if info.universe != "index":
+        return [f"- Universe: {info.n_assets} active stocks (no point-in-time masking); {span}."]
+    lines = [
+        f"- Universe: point-in-time {info.index_code} from `index_membership`: "
+        f"{info.n_members} names were members at some point in the window; "
+        f"{info.n_assets} have enough daily bars to compute features (on their full stored "
+        f"history; a signal counts only on dates with `IN_UNIVERSE`). {span}.",
+        f"- Coverage on OOS dates (members with a finite TECH_SCORE / members): mean "
+        f"{_share(info.coverage_mean)}, minimum {_share(info.coverage_min)}"
+        + (f" on {info.coverage_min_date:%Y-%m-%d}" if info.coverage_min_date is not None else "")
+        + ".",
+    ]
+    if info.missing_prices:
+        lines.append("- Members with **no price rows** (need a human-run ingest; OOS member days "
+                     "in brackets): " + ", ".join(f"{t} ({n})" for t, n in
+                                                  sorted(info.missing_prices.items())) + ".")
+    if info.short_history:
+        lines.append(f"- Members with too few bars to score (OOS member days): "
+                     + ", ".join(f"{t} ({n})" for t, n in sorted(info.short_history.items())) + ".")
+    lines.append(f"- Membership before {info.complete_from} is not sourced and falls back to "
+                 f"today's active stocks: {info.fallback_dates} panel dates "
+                 f"({info.fallback_oos_dates} OOS).")
+    lines.append(f"- Comparison universe \"active\": the {info.n_active} active stocks with "
+                 "enough bars, no masking (the pre-170 behaviour), evaluated on the same "
+                 "walk-forward splits (the calendar comes from the index universe).")
+    return lines
+
+
 def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
-                  report_date: date) -> str:
+                  report_date: date, compare: pd.DataFrame | None = None) -> str:
+    """``compare``: the "active"-universe table on the same splits (adds "Universe effect")."""
     head = headline(table)
     horizons = info.horizons
     families = [c for c in SCORE_COLUMNS if c != "TECH_SCORE"]
@@ -203,14 +321,14 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     w = out.append
 
     w(f"# Evaluation report {report_date:%Y-%m-%d}\n")
-    w(f"> {SURVIVORSHIP_CAVEAT}\n")
+    w(f"> {universe_note(info)}\n")
     w("Generated by `python main.py evaluate` (`investbot/evaluation/`). Nothing is fitted: "
       "every signal is evaluated with its designed polarity on walk-forward test blocks only.\n")
 
     w("## Setup\n")
     oos = [s.test for s in splits]
-    w(f"- Universe: {info.n_assets} active stocks; bars {info.first_date:%Y-%m-%d} → "
-      f"{info.last_date:%Y-%m-%d}" + (f"; panel from {info.start}" if info.start else "") + ".")
+    for line in _setup_universe_lines(info):
+        w(line)
     if oos:
         w(f"- Out-of-sample (OOS): {len(splits)} test blocks of {TEST_MONTHS} months, "
           f"{oos[0][0]:%Y-%m-%d} → {oos[-1][-1]:%Y-%m-%d}, {sum(len(t) for t in oos)} dates. "
@@ -229,7 +347,9 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       f"brokerage from `config/tax_regimes.py` on a ₹{REFERENCE_TRADE_VALUE / 1e5:g} lakh order "
       f"({statutory_round_trip_cost():.3%}) + slippage {SLIPPAGE_PER_SIDE:.3%} per side.")
     if info.elapsed_s == info.elapsed_s:
-        w(f"- Runtime: {info.elapsed_s:.0f} s.")
+        w(f"- Runtime: {info.elapsed_s:.0f} s"
+          + (f"; peak RSS {info.peak_rss_mb:.0f} MB" if info.peak_rss_mb == info.peak_rss_mb
+             else "") + " (features computed one asset at a time, once for both universes).")
     w("")
 
     w("## Verdict\n")
@@ -281,6 +401,28 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       "No taxes.\n")
     w(_table(_order(head, portfolio_names), _HELD_COLS))
 
+    if compare is not None and not compare.empty:
+        w("## Universe effect: point-in-time index vs today's active stocks (OOS)\n")
+        w("Same walk-forward splits and labels. *index* masks every signal and the universe "
+          "benchmark to the members on each date; *active* scores today's active stocks on every "
+          "date. Held net − univ. = held-portfolio CAGR net of costs minus the equal-weight "
+          "universe CAGR over the same periods.\n")
+        w(_table(universe_effect(table, compare, ["TECH_SCORE", *families, *BASELINE_COLUMNS]),
+                 _EFFECT_COLS))
+        flips = _significance_changes(table, compare)
+        if not flips.empty:
+            w("Tests whose BH significance (q < "
+              f"{PROMISING_Q:.2f}) or promising flag differs between the universes:\n")
+            w(_table(flips, [("signal", "signal", _s), ("h", "horizon", _int),
+                             ("IC index", "ic_mean_index", _f), ("q index", "ic_q_index",
+                                                                 lambda x: _f(x, "{:.3f}")),
+                             ("promising index", "promising_index", _f),
+                             ("IC active", "ic_mean_active", _f), ("q active", "ic_q_active",
+                                                                   lambda x: _f(x, "{:.3f}")),
+                             ("promising active", "promising_active", _f)]))
+        else:
+            w("No test changes BH significance or promising flag between the universes.\n")
+
     w("## By regime (OOS)\n")
     w(f"Cross-section restricted to names in that regime on that date. Daily IC and quintiles "
       f"need ≥ {MIN_NAMES} names on a date, so chaotic is mostly empty. The **pooled IC** uses "
@@ -330,13 +472,23 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
         w(_table(sig, _IC_COLS))
 
     w("## Caveats\n")
-    w(f"- {SURVIVORSHIP_CAVEAT}")
+    w(f"- {universe_note(info)}")
     w("- Five years of daily history leave about three years out of sample after warmup "
       "(EMA_200, regime window) and the first training year; ~50 names per date.")
     w("- A missing session (purged bar) is skipped, not filled: t+1 is the next *stored* bar.")
     w("- A signal significant only with its sign inverted is a finding about polarity, "
       "not something to switch on: polarity decisions go to Ankit with this evidence.")
     return "\n".join(out) + "\n"
+
+
+def _significance_changes(index_table: pd.DataFrame, active_table: pd.DataFrame) -> pd.DataFrame:
+    cols = ["signal", "horizon", "ic_mean", "ic_q", "promising"]
+    m = headline(index_table)[cols].merge(headline(active_table)[cols], on=["signal", "horizon"],
+                                          suffixes=("_index", "_active"))
+    sig_i = m["ic_q_index"] < PROMISING_Q
+    sig_a = m["ic_q_active"] < PROMISING_Q
+    diff = (sig_i != sig_a) | (m["promising_index"].astype(bool) != m["promising_active"].astype(bool))
+    return m[diff].sort_values(["signal", "horizon"])
 
 
 def report_paths(report_dir: Path, csv_dir: Path, report_date: date) -> tuple[Path, Path]:
@@ -349,33 +501,113 @@ def report_paths(report_dir: Path, csv_dir: Path, report_date: date) -> tuple[Pa
     raise FileExistsError(f"too many reports for {stem} in {report_dir}")
 
 
+def active_subset(features: pd.DataFrame, labels: pd.DataFrame,
+                  active: list[str] | set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The "active" dataset from an "index" one: active tickers only, no ``IN_UNIVERSE``.
+    Features are full-history in both modes, so this equals ``build_dataset(universe="active")``
+    for every active ticker present in the index panel."""
+    keep = features.index.get_level_values("ticker").isin(list(active))
+    return features.loc[keep].drop(columns=[UNIVERSE_COLUMN], errors="ignore"), labels.loc[keep]
+
+
+def peak_rss_mb() -> float:
+    """Peak resident set size of this process so far (Linux reports KB)."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+
+
+def _coverage_info(session, index_code: str, start, end, features: pd.DataFrame,
+                   oos: pd.DatetimeIndex, active: list[str], complete_from: date) -> dict:
+    from investbot.evaluation.loader import membership_for, tickers_with_prices, universe_tickers
+    members_all = universe_tickers(session, index_code, start, end)
+    member = point_in_time_membership(membership_for(session, index_code, members_all, oos),
+                                      active, complete_from)
+    score = features["TECH_SCORE"].unstack("ticker")
+    cov = universe_coverage(member, score.reindex(index=oos))
+    in_panel = set(features.index.get_level_values("ticker"))
+    priced = tickers_with_prices(session, members_all)
+    oos_days = member.sum(axis=0)
+    dates = features.index.get_level_values("date")
+    c = cov["coverage"]
+    return {
+        "n_members": len(members_all),
+        "coverage_mean": float(c.mean()) if c.notna().any() else math.nan,
+        "coverage_min": float(c.min()) if c.notna().any() else math.nan,
+        "coverage_min_date": c.idxmin() if c.notna().any() else None,
+        "missing_prices": {t: int(oos_days[t]) for t in members_all if t not in priced},
+        "short_history": {t: int(oos_days[t]) for t in members_all
+                          if t in priced and t not in in_panel},
+        "fallback_dates": int(pd.DatetimeIndex(dates.unique()).to_series()
+                              .lt(pd.Timestamp(complete_from)).sum()),
+        "fallback_oos_dates": int((oos < pd.Timestamp(complete_from)).sum()),
+        "complete_from": complete_from,
+    }
+
+
 def run_evaluation(
     horizons=HORIZONS,
     start: date | None = None,
     end: date | None = None,
     *,
+    universe: str = "index",
+    index_code: str = "NIFTY50",
     session=None,
     report_dir: Path = REPORT_DIR,
     csv_dir: Path = CSV_DIR,
     report_date: date | None = None,
-) -> tuple[Path, Path, pd.DataFrame]:
-    """Build the panel, evaluate, write the report and CSV. Returns (report, csv, table)."""
+) -> tuple[Path, Path, pd.DataFrame, RunInfo]:
+    """Build the panel, evaluate, write the report and CSV. Returns (report, csv, table, info).
+
+    ``universe="index"`` also evaluates the "active" universe on the same splits
+    (the "Universe effect" table); ``table`` is the headline universe's metrics.
+    """
+    from investbot.data.index_membership import COMPLETE_FROM
+    from investbot.evaluation.loader import active_tickers
+
     t0 = time.monotonic()
     horizons = tuple(sorted(int(h) for h in horizons))
-    features, labels = build_dataset(start=start, end=end, horizons=horizons, session=session)
-    if features.empty:
-        raise RuntimeError("no assets with enough daily bars to evaluate")
-    table, splits = evaluate(features, labels, horizons)
-    if table.empty:
-        raise RuntimeError("evaluation produced no metrics (too little history?)")
+    own = session is None
+    if own:
+        from investbot.data.db import SessionLocal
+        session = SessionLocal()
+    try:
+        features, labels = build_dataset(start=start, end=end, horizons=horizons, session=session,
+                                         universe=universe, index_code=index_code)
+        if features.empty:
+            raise RuntimeError("no assets with enough daily bars to evaluate")
+        table, splits = evaluate(features, labels, horizons)
+        if table.empty:
+            raise RuntimeError("evaluation produced no metrics (too little history?)")
+        active = active_tickers(session)
+        extra: dict = {}
+        compare = None
+        if universe == "index":
+            missing = [t for t in active
+                       if t not in set(features.index.get_level_values("ticker"))]
+            fa, la = active_subset(features, labels, active)
+            if missing:      # active stocks outside the index universe (none for NIFTY50)
+                fm, lm = build_dataset(missing, start, end, horizons=horizons, session=session,
+                                       universe="active")
+                fa, la = pd.concat([fa, fm]).sort_index(), pd.concat([la, lm]).sort_index()
+            compare, _ = evaluate(fa, la, horizons, splits=splits)
+            extra = _coverage_info(session, index_code, start, end, features,
+                                   oos_dates(splits), active, COMPLETE_FROM)
+            extra["n_active"] = fa.index.get_level_values("ticker").nunique()
+            del fa, la
+    finally:
+        if own:
+            session.close()
     dates = features.index.get_level_values("date")
     info = RunInfo(n_assets=features.index.get_level_values("ticker").nunique(),
                    first_date=dates.min(), last_date=dates.max(), horizons=horizons,
-                   start=start, elapsed_s=time.monotonic() - t0)
+                   start=start, elapsed_s=time.monotonic() - t0, universe=universe,
+                   index_code=index_code, peak_rss_mb=peak_rss_mb(), **extra)
     report_date = report_date or date.today()
     report_dir.mkdir(parents=True, exist_ok=True)
     csv_dir.mkdir(parents=True, exist_ok=True)
     report, csv = report_paths(report_dir, csv_dir, report_date)
-    table.to_csv(csv, index=False)
-    report.write_text(render_report(table, splits, info, report_date), encoding="utf-8")
-    return report, csv, table
+    out = table.assign(universe=universe)
+    if compare is not None:
+        out = pd.concat([out, compare.assign(universe="active")], ignore_index=True)
+    out.to_csv(csv, index=False)
+    report.write_text(render_report(table, splits, info, report_date, compare), encoding="utf-8")
+    return report, csv, table, info

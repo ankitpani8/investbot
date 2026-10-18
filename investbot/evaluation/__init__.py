@@ -2,7 +2,8 @@
 Walk-forward forward-return evaluation harness.
 
     loader.py       the only DB access (universe, one asset's daily bars)
-    panel.py        build_panel / build_dataset: (date, ticker) features + separate labels
+    panel.py        build_panel / build_dataset: (date, ticker) features + separate labels;
+                    universe="index" adds point-in-time IN_UNIVERSE
     labels.py       FWD_RET_h (next-open entry) and FWD_CC_RET_h
     baselines.py    momentum, 12-1 momentum, reversal, low-vol
     walkforward.py  expanding-train / 6-month-test splits with embargo
