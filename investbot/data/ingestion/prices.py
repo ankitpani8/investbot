@@ -22,7 +22,7 @@ from investbot.config.settings import (
     INTRADAY_PERIOD, INTRADAY_REFRESH_DAYS,
     MAX_RETRIES, RETRY_DELAY_SECONDS, TIMEZONE,
 )
-from investbot.data.models import Asset, Base, CorporateAction, PriceDaily, PriceIntraday
+from investbot.data.models import Asset, Base, CorporateAction, IndexMembership, PriceDaily, PriceIntraday
 from investbot.data.quality import validate_price_row
 
 logger = logging.getLogger(__name__)
@@ -153,19 +153,26 @@ def ingest_daily_prices(session: Session, asset: Asset, now: datetime | None = N
     return counts.inserted + counts.updated
 
 
-def _ingest_daily(session: Session, asset: Asset, now: datetime | None) -> IngestResult:
+def _ingest_daily(
+    session: Session, asset: Asset, now: datetime | None, *, full: bool = False,
+) -> IngestResult:
     """
     Daily ingestion with its counts. An asset with stored bars downloads only the overlap
     window; it falls back to the full DAILY_PERIOD (one extra request) when that window holds
     fewer than DAILY_REFRESH_SESSIONS sessions, and re-downloads the full period for its
     corporate actions when the window shows a split that is not stored yet.
+
+    `full=True` downloads DAILY_PERIOD in one request whatever is stored, so neither fallback
+    can fire. Storage is unchanged: only the refresh window is upserted, older bars and actions
+    are insert-only (a missing old bar or dividend is added, a stored one is never rewritten
+    except a dividend whose value differs, as in any run), so history is not re-adjusted.
     """
     ticker = asset.ticker
     logger.info(f"Ingesting daily prices for {ticker}...")
     result = IngestResult()
     now_ist = _now_ist(now)
 
-    start = _download_start(session, asset, "1d", now)
+    start = None if full else _download_start(session, asset, "1d", now)
     df = _fetch(result, ticker, DAILY_PERIOD, "1d", start, actions=True)
     if df is None:
         return result
@@ -246,13 +253,16 @@ def ingest_intraday_prices(session: Session, asset: Asset, now: datetime | None 
     return counts.inserted + counts.updated
 
 
-def _ingest_intraday(session: Session, asset: Asset, now: datetime | None) -> IngestResult:
+def _ingest_intraday(
+    session: Session, asset: Asset, now: datetime | None, *, full: bool = False,
+) -> IngestResult:
+    """Intraday ingestion with its counts; `full=True` downloads INTRADAY_PERIOD in one request."""
     ticker = asset.ticker
     logger.info(f"Ingesting intraday prices for {ticker}...")
     result = IngestResult()
     now_naive = _now_ist(now).replace(tzinfo=None)
 
-    start = _download_start(session, asset, INTRADAY_INTERVAL, now)
+    start = None if full else _download_start(session, asset, INTRADAY_INTERVAL, now)
     df = _fetch(result, ticker, INTRADAY_PERIOD, INTRADAY_INTERVAL, start)
     if df is None:
         return result
@@ -304,17 +314,50 @@ def _intraday_bars(df: pd.DataFrame, now_naive: datetime) -> tuple[dict, int]:
     return bars, skipped
 
 
-def ingest_all_prices(session: Session, asset_type: str = "stock"):
+_INTERVAL_INGESTS = {"daily": _ingest_daily, "intraday": _ingest_intraday}
+
+
+def member_assets(
+    session: Session, index_code: str = "NIFTY50", asset_type: str = "stock",
+) -> list[Asset]:
+    """
+    Inactive assets with at least one `index_membership` row for `index_code`, by ticker.
+
+    These are the past (and not yet seeded as active) members that the normal ingest skips.
+    Active members are covered by `ingest_all_prices` already.
+    """
+    return list(session.execute(
+        select(Asset)
+        .join(IndexMembership, IndexMembership.asset_id == Asset.id)
+        .where(IndexMembership.index_code == index_code,
+               Asset.is_active.is_(False), Asset.asset_type == asset_type)
+        .distinct().order_by(Asset.ticker)
+    ).scalars())
+
+
+def ingest_all_prices(
+    session: Session, asset_type: str = "stock", *, full: bool = False,
+    assets: list[Asset] | None = None, intervals: tuple[str, ...] = ("daily", "intraday"),
+):
     """
     Ingest daily + intraday prices for all active assets of a given type.
+
+    `full=True` forces the full-period download (one request per asset and interval).
+    `assets` replaces the active-asset selection (`asset_type` is then unused), e.g.
+    `member_assets(...)`; `intervals` picks "daily" and/or "intraday". `is_active` is never changed.
 
     `daily_total` / `intraday_total` are rows written (inserted + updated). The
     `*_inserted`, `*_updated`, `*_rejected` keys split them, `actions_*` count
     corporate-action rows, and `full_downloads` / `incremental_downloads` count
-    yfinance price requests by kind.
+    yfinance price requests by kind. `no_data` lists tickers that have no `price_daily`
+    rows after a daily ingest (empty or failed download).
     """
+    unknown = set(intervals) - set(_INTERVAL_INGESTS)
+    if unknown:
+        raise ValueError(f"unknown interval(s) {sorted(unknown)}; use 'daily' and/or 'intraday'")
     Base.metadata.create_all(session.get_bind())    # corporate_actions may be missing on an existing DB
-    assets = session.query(Asset).filter_by(is_active=True, asset_type=asset_type).all()
+    if assets is None:
+        assets = session.query(Asset).filter_by(is_active=True, asset_type=asset_type).all()
     logger.info(f"Starting price ingestion for {len(assets)} {asset_type} assets")
 
     stats = {
@@ -322,13 +365,15 @@ def ingest_all_prices(session: Session, asset_type: str = "stock"):
         "daily_inserted": 0, "daily_updated": 0, "daily_rejected": 0,
         "intraday_inserted": 0, "intraday_updated": 0, "intraday_rejected": 0,
         "actions_inserted": 0, "actions_updated": 0,
-        "full_downloads": 0, "incremental_downloads": 0,
+        "full_downloads": 0, "incremental_downloads": 0, "no_data": [],
     }
     for i, asset in enumerate(assets, 1):
         logger.info(f"[{i}/{len(assets)}] Processing {asset.ticker}...")
         try:
-            for label, ingest in (("daily", _ingest_daily), ("intraday", _ingest_intraday)):
-                res = ingest(session, asset, None)
+            for label in ("daily", "intraday"):
+                if label not in intervals:
+                    continue
+                res = _INTERVAL_INGESTS[label](session, asset, None, full=full)
                 stats[f"{label}_inserted"] += res.counts.inserted
                 stats[f"{label}_updated"] += res.counts.updated
                 stats[f"{label}_rejected"] += len(res.counts.rejected)
@@ -337,6 +382,10 @@ def ingest_all_prices(session: Session, asset_type: str = "stock"):
                 stats["actions_updated"] += res.actions.updated
                 stats["full_downloads"] += res.full_downloads
                 stats["incremental_downloads"] += res.incremental_downloads
+            if "daily" in intervals and not session.execute(
+                select(func.count()).select_from(PriceDaily).where(PriceDaily.asset_id == asset.id)
+            ).scalar():
+                stats["no_data"].append(asset.ticker)
         except Exception as e:
             logger.error(f"Error processing {asset.ticker}: {e}")
             stats["errors"].append(asset.ticker)

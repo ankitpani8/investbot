@@ -452,6 +452,7 @@ def test_ingest_all_prices_stats(session, monkeypatch):
         "intraday_inserted": 3, "intraday_updated": 1, "intraday_rejected": 1,
         "actions_inserted": 2, "actions_updated": 0,
         "full_downloads": 3, "incremental_downloads": 2,       # B x2, A's new split x1
+        "no_data": ["B.NS"],                                    # empty download, no stored rows
     }
     assert calls == [
         ("A.NS", "1d", date(2026, 9, 30)), ("A.NS", "1d", None), ("A.NS", "15m", date(2026, 10, 10)),

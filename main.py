@@ -3,7 +3,14 @@ InvestBot — Main entry point.
 
 Usage:
     python main.py setup      # Create tables + seed reference data
-    python main.py ingest     # Run full initial data ingestion (prices + financials)
+    python main.py ingest     # Prices (incremental for assets with history) + financials
+    python main.py ingest --full
+                              # ...forcing the full-period price download for every active asset
+                              # (backfills corporate actions and old bars; history stays insert-only)
+    python main.py ingest --members [INDEX] [--full]
+                              # Daily prices + corporate actions only, for past members of INDEX
+                              # (default NIFTY50): inactive assets in index_membership. No intraday,
+                              # no financials, is_active is never changed
     python main.py run        # Start scheduler (background jobs)
     python main.py status     # Show database statistics
     python main.py gaps       # Detect price data gaps
@@ -55,29 +62,55 @@ def cmd_setup():
     logger.info("Setup complete.")
 
 
-def cmd_ingest():
-    """Run initial full data ingestion — prices + financials for all NIFTY50."""
-    from investbot.data.ingestion.prices import ingest_all_prices
+def _ingest_args(argv: list[str]):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="main.py ingest", description="Price and financials ingestion")
+    parser.add_argument("--full", action="store_true",
+                        help="force the full-period price download instead of the incremental overlap")
+    parser.add_argument("--members", nargs="?", const="NIFTY50", default=None, metavar="INDEX",
+                        help="only daily prices and corporate actions for past members of INDEX "
+                             "(default NIFTY50); no intraday, no financials, is_active unchanged")
+    return parser.parse_args(argv)
+
+
+def cmd_ingest(argv: list[str] | None = None):
+    """Ingest prices + financials for the active stocks; `--members` ingests past index members' daily prices."""
+    from investbot.data.ingestion.prices import ingest_all_prices, member_assets
     from investbot.data.ingestion.financials import ingest_all_financials
+
+    args = _ingest_args(argv or [])
+    members = args.members is not None
 
     session = SessionLocal()
     try:
         logger.info("=" * 60)
-        logger.info("STARTING FULL DATA INGESTION")
+        title = f"MEMBER PRICE INGESTION ({args.members})" if members else "DATA INGESTION"
+        logger.info(f"STARTING {title}" + (" [FULL]" if args.full else ""))
         logger.info("=" * 60)
 
         start = datetime.now()
 
-        logger.info("\n--- Phase 1/2: Price Data ---")
-        price_stats = ingest_all_prices(session, asset_type="stock")
+        if members:
+            assets = member_assets(session, args.members)
+            logger.info(f"{len(assets)} inactive {args.members} member(s) to ingest "
+                        f"(daily prices and corporate actions only)")
+            price_stats = ingest_all_prices(
+                session, asset_type="stock", full=args.full, assets=assets, intervals=("daily",))
+            fin_stats = None
+        else:
+            logger.info("\n--- Phase 1/2: Price Data ---")
+            price_stats = ingest_all_prices(session, asset_type="stock", full=args.full)
 
-        logger.info("\n--- Phase 2/2: Financial Statements ---")
-        fin_stats = ingest_all_financials(session, asset_type="stock")
+            logger.info("\n--- Phase 2/2: Financial Statements ---")
+            fin_stats = ingest_all_financials(session, asset_type="stock")
 
         elapsed = (datetime.now() - start).total_seconds()
         logger.info("=" * 60)
         logger.info(f"INGESTION COMPLETE in {elapsed:.0f}s")
         for label, key in (("Daily prices:   ", "daily"), ("Intraday prices:", "intraday")):
+            if members and key == "intraday":
+                continue
             logger.info(
                 f"  {label} inserted {price_stats[key + '_inserted']}, "
                 f"updated {price_stats[key + '_updated']}, "
@@ -91,10 +124,19 @@ def cmd_ingest():
             f"  Price downloads: {price_stats['full_downloads']} full, "
             f"{price_stats['incremental_downloads']} incremental"
         )
-        logger.info(f"  Annual financials:    {fin_stats['annual']} records")
-        logger.info(f"  Quarterly financials: {fin_stats['quarterly']} records")
-        if price_stats['errors'] or fin_stats['errors']:
-            logger.warning(f"  Errors: {price_stats['errors'] + fin_stats['errors']}")
+        if fin_stats is not None:
+            logger.info(f"  Annual financials:    {fin_stats['annual']} records")
+            logger.info(f"  Quarterly financials: {fin_stats['quarterly']} records")
+        no_data = price_stats.get("no_data") or []
+        if no_data:
+            logger.warning(
+                f"  No price data for {len(no_data)} ticker(s): {', '.join(no_data)}. The Yahoo symbol "
+                f"may be renamed or delisted (e.g. HDFC merged Jul 2023, INFRATEL is now INDUSTOWER); "
+                f"check each symbol by hand."
+            )
+        errors = price_stats['errors'] + (fin_stats['errors'] if fin_stats else [])
+        if errors:
+            logger.warning(f"  Errors: {errors}")
         logger.info("=" * 60)
     finally:
         session.close()
@@ -381,4 +423,7 @@ if __name__ == "__main__":
         print(__doc__)
         sys.exit(1)
 
-    COMMANDS[sys.argv[1]]()
+    if sys.argv[1] == "ingest":
+        cmd_ingest(sys.argv[2:])
+    else:
+        COMMANDS[sys.argv[1]]()
