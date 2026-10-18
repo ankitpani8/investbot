@@ -11,6 +11,8 @@ Usage:
     python main.py dq --purge # ...and delete the bad rows (next ingest re-fetches them)
     python main.py score [TICKER] [--timeframe 1d|15m] [--as-of YYYY-MM-DD] [--no-cache]
                               # Technical scores, ranked (one asset in detail with TICKER)
+    python main.py evaluate [--horizons 1,5,20] [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+                              # Walk-forward forward-return evaluation → docs/reports/eval_<date>.md
 """
 import sys
 import logging
@@ -275,6 +277,38 @@ def cmd_score():
         session.close()
 
 
+def cmd_evaluate():
+    """Walk-forward forward-return evaluation of every technical signal and the baselines."""
+    from investbot.evaluation.report import SURVIVORSHIP_CAVEAT, run_evaluation
+
+    args = sys.argv[2:]
+    opts = {"--horizons": "1,5,20", "--start": None, "--end": None}
+    i = 0
+    while i < len(args):
+        if args[i] in opts and i + 1 < len(args):
+            opts[args[i]] = args[i + 1]
+            i += 2
+        else:
+            print(f"unknown argument {args[i]!r}\n{__doc__}")
+            sys.exit(1)
+    horizons = tuple(int(h) for h in opts["--horizons"].split(",") if h.strip())
+    start = datetime.strptime(opts["--start"], "%Y-%m-%d").date() if opts["--start"] else None
+    end = datetime.strptime(opts["--end"], "%Y-%m-%d").date() if opts["--end"] else None
+
+    logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
+    session = SessionLocal()
+    try:
+        logger.info("Evaluating horizons %s (one asset at a time)...", horizons)
+        report, csv, table = run_evaluation(horizons, start, end, session=session)
+    finally:
+        session.close()
+    n_prom = int(table["promising"].sum())
+    print(f"\n  {SURVIVORSHIP_CAVEAT.replace('**', '')}\n")
+    print(f"  Report:  {report}")
+    print(f"  Metrics: {csv}")
+    print(f"  Promising signal × horizon tests: {n_prom}\n")
+
+
 # ── CLI dispatch ──────────────────────────────────────────
 COMMANDS = {
     "setup": cmd_setup,
@@ -284,6 +318,7 @@ COMMANDS = {
     "gaps": cmd_gaps,
     "dq": cmd_dq,
     "score": cmd_score,
+    "evaluate": cmd_evaluate,
 }
 
 if __name__ == "__main__":
