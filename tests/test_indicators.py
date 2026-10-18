@@ -187,10 +187,51 @@ def test_returns_nan_close_not_forward_filled(ohlcv):
     assert np.isfinite(pct.iloc[302])
 
 
+def test_cumulative_returns_restart_after_nan_close(ohlcv):
+    """CUM* are NaN where the return is NaN and restart from the next valid bar."""
+    from investbot.scoring.technical._extensions import returns
+
+    k = 300
+    out = returns(_with_nan_close(ohlcv, k))
+    clean = returns(ohlcv)
+    for name, ret in (("CUMLOGRET_1", "LOGRET_1"), ("CUMPCTRET_1", "PCTRET_1")):
+        cum, r = pd.Series(out[name]), pd.Series(out[ret])
+        assert np.isnan(cum.iloc[k]) and np.isnan(cum.iloc[k + 1])
+        assert cum.isna().equals(r.isna())
+        # before the gap: identical to the gap-free run
+        np.testing.assert_allclose(cum.iloc[:k], pd.Series(clean[name]).iloc[:k], equal_nan=True)
+        # first bar after the gap holds its own return, then accumulates from there
+        assert cum.iloc[k + 2] == pytest.approx(r.iloc[k + 2])
+        seg = r.iloc[k + 2:]
+        want = seg.cumsum() if name == "CUMLOGRET_1" else (1.0 + seg).cumprod() - 1.0
+        np.testing.assert_allclose(cum.iloc[k + 2:], want, rtol=1e-12)
+
+
+def test_cumulative_returns_unchanged_on_gap_free_data(ohlcv):
+    from investbot.scoring.technical._extensions import returns
+
+    out = returns(ohlcv)
+    close = ohlcv["close"]
+    np.testing.assert_allclose(
+        out["CUMLOGRET_1"], np.log(close / close.shift(1)).cumsum(), rtol=1e-12, equal_nan=True)
+    np.testing.assert_allclose(
+        out["CUMPCTRET_1"], (close / close.shift(1)).cumprod() - 1.0, rtol=1e-12, equal_nan=True)
+
+
 @pytest.mark.parametrize("cut", [100, 350])
 def test_returns_truncation_invariance(ohlcv, cut):
     from investbot.scoring.technical._extensions import returns
 
     full_out = pd.DataFrame(returns(ohlcv))
     trunc_out = pd.DataFrame(returns(ohlcv.iloc[:cut]))
+    pd.testing.assert_frame_equal(trunc_out, full_out.iloc[:cut])
+
+
+@pytest.mark.parametrize("cut", [250, 301, 302, 350])
+def test_cumulative_returns_truncation_invariance_with_gap(ohlcv, cut):
+    from investbot.scoring.technical._extensions import returns
+
+    gappy = _with_nan_close(ohlcv, 300)
+    full_out = pd.DataFrame(returns(gappy))
+    trunc_out = pd.DataFrame(returns(gappy.iloc[:cut]))
     pd.testing.assert_frame_equal(trunc_out, full_out.iloc[:cut])

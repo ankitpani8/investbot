@@ -226,7 +226,37 @@ def test_mtf_regime_confidence_is_smoothed_previous_session():
 def test_mtf_align_is_weighted_mean_of_components(full):
     for kind in ("TREND", "MOMENTUM"):
         parts = full[[f"MTF_{kind}_{tf}" for tf in ("15M", "1H", "1D")]]
-        np.testing.assert_allclose(full[f"MTF_{kind}_ALIGN"], parts.mean(axis=1, skipna=False))
+        expected = (parts.to_numpy() @ np.array(M.TIMEFRAME_WEIGHTS)) / sum(M.TIMEFRAME_WEIGHTS)
+        np.testing.assert_allclose(full[f"MTF_{kind}_ALIGN"], expected)
+
+
+def test_timeframe_weights_are_1_2_3():
+    assert M.TIMEFRAME_WEIGHTS == (1.0, 2.0, 3.0)
+
+
+def test_weighted_alignment_follows_daily_when_only_daily_disagrees():
+    # 15m and 1h agree up (one of them only half-strength), daily trend is down.
+    trends = [np.array([1.0, 0.5]), np.array([0.5, 1.0]), np.array([-1.0, -1.0])]
+    got = M._weighted_mean(trends, M.TIMEFRAME_WEIGHTS)
+    assert (got < 0).all()                                   # sign of the daily trend
+    assert (M._weighted_mean(trends, (1.0, 1.0, 1.0)) > 0).all()   # equal weights said up
+    # Full-strength intraday against full-strength daily is an exact tie.
+    np.testing.assert_allclose(
+        M._weighted_mean([np.array([1.0]), np.array([1.0]), np.array([-1.0])],
+                         M.TIMEFRAME_WEIGHTS), 0.0, atol=1e-12)
+
+
+def test_mtf_alignment_daily_downtrend_vs_intraday_uptrend():
+    days = pd.bdate_range("2025-01-01", periods=120)
+    m15 = _intraday(days[-15:])
+    m15[["open", "high", "low", "close"]] = (
+        np.linspace(100, 160, len(m15))[:, None] * np.array([0.999, 1.002, 0.998, 1.0]))
+    d = _daily(days)
+    d[["open", "high", "low", "close"]] = (
+        np.linspace(100, 50, len(d))[:, None] * np.array([0.995, 1.01, 0.99, 1.0]))
+    tail = mtf_alignment(m15, d, regime_kwargs=REGIME_KW).iloc[-BARS_PER_DAY:]
+    assert (tail["MTF_TREND_1D"] == -1.0).all() and (tail["MTF_TREND_1H"] == 1.0).all()
+    assert (tail["MTF_TREND_ALIGN"].abs() < 1e-12).all()
 
 
 def test_component_rules():

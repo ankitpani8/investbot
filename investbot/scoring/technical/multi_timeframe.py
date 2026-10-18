@@ -38,7 +38,11 @@ MTF alignment (``mtf_alignment``)
                              one of -1, -0.5, 0, 0.5, 1
         momentum regime    = +1 if RSI_14 > RSI_BULL, -1 if < RSI_BEAR, else 0
     MTF_TREND_ALIGN    = TIMEFRAME_WEIGHTS-weighted mean of the trend
-                         directions, in [-1, 1]. +1 means every timeframe is
+                         directions, in [-1, 1]. Weights are 1 : 2 : 3 for
+                         15m : 1h : 1d, so the daily trend outweighs the two
+                         intraday ones together only when they are not both
+                         at full strength (full-strength intraday against a
+                         full-strength daily trend nets to exactly 0). +1 means every timeframe is
                          in an uptrend by both measures, -1 every one in a
                          downtrend, values near 0 mean disagreement or flat.
     MTF_MOMENTUM_ALIGN = the same weighted mean over the momentum regimes.
@@ -91,8 +95,9 @@ SUPERTREND_MULT: float = 3.0
 #: bearish, in between neutral.
 RSI_BULL: float = 55.0
 RSI_BEAR: float = 45.0
-#: Weights of 15m, 1h and 1d in the MTF_*_ALIGN averages.
-TIMEFRAME_WEIGHTS: tuple[float, float, float] = (1.0, 1.0, 1.0)
+#: Weights of 15m, 1h and 1d in the MTF_*_ALIGN averages: the slower the
+#: timeframe, the more it counts (normalised by their sum).
+TIMEFRAME_WEIGHTS: tuple[float, float, float] = (1.0, 2.0, 3.0)
 
 _ST_TAG = f"{SUPERTREND_LENGTH}_{SUPERTREND_MULT}"
 FEATURE_COLUMNS: tuple[str, ...] = (

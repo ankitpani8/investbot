@@ -369,6 +369,14 @@ def rvol(df: pd.DataFrame, periods: tuple[int, ...] = (20, 50)) -> dict[str, Any
 # Returns (log and percent, single-period and cumulative)
 # ──────────────────────────────────────────────────────────
 
+def _segmented_cum(x: pd.Series, how: str) -> pd.Series:
+    """Cumsum/cumprod of ``x`` that is NaN where ``x`` is NaN and restarts after each NaN."""
+    bad = x.isna()
+    seg = bad.cumsum().to_numpy()   # a NaN bar closes the previous segment
+    out = getattr(x.groupby(seg), how)()
+    return out.where(~bad)
+
+
 def returns(df: pd.DataFrame) -> dict[str, Any]:
     """Log and percent returns — single-period and cumulative.
 
@@ -378,6 +386,13 @@ def returns(df: pd.DataFrame) -> dict[str, Any]:
          indicators in feature importance. Including them as first-class
          columns ensures they're available to the PCA+XGBoost pipeline.
       2. Performance dashboards need cumulative return as a baseline.
+
+    Cumulative columns and missing closes: a bar whose single-period return
+    is NaN is NaN in ``CUMLOGRET_1`` / ``CUMPCTRET_1`` too, and the
+    cumulation restarts from zero on the next valid bar (one segment per
+    gap-free run; the first bar of a segment holds its own return). A
+    plain cumsum/cumprod would skip the NaN and silently drop that period.
+    Gap-free data (NaN only on bar 0) is unchanged.
     """
     close = df["close"]
     pct   = close.pct_change(fill_method=None)
@@ -386,6 +401,6 @@ def returns(df: pd.DataFrame) -> dict[str, Any]:
     return {
         "LOGRET_1":    logr,
         "PCTRET_1":    pct,
-        "CUMLOGRET_1": logr.cumsum(),
-        "CUMPCTRET_1": (1.0 + pct).cumprod() - 1.0,
+        "CUMLOGRET_1": _segmented_cum(logr, "cumsum"),
+        "CUMPCTRET_1": _segmented_cum(1.0 + pct, "cumprod") - 1.0,
     }

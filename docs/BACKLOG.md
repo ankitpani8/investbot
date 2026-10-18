@@ -18,7 +18,7 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] Run `dq` after the daily price job in the scheduler and surface failures (it exits 1 on bad rows).
 - [ ] `scripts/smoke_indicators.py` picks the asset with the most rows, so the asset under test changes when rows are purged (RELIANCE → ITC). Take an optional ticker argument and default to a fixed one.
 - [x] `_extensions.py` `pct_change(fill_method=None)`: a NaN close is no longer masked in the return columns (`agent/005-housekeeping`)
-- [ ] `CUMPCTRET_1` and `CUMLOGRET_1` use cumprod/cumsum, which skip NaN, so a single missing close silently drops one period from the cumulative return. Decide whether the cumulative columns should go NaN or carry on.
+- [x] `CUMPCTRET_1` / `CUMLOGRET_1` are NaN on any NaN-return bar and restart from the next valid bar (`agent/130-mtf-weights-and-cumret`)
 - [ ] Add `dq` and `score` to the CLI list in `CLAUDE.md`.
 
 ## Phase 2: technical scoring
@@ -41,6 +41,8 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] `support_resistance.py` follow-up: S/R levels come only from price pivots. The master plan calls volume-weighted zones the *primary* S/R method. Decide in `confluence.py` how `SR_*` and `VP_*` combine (e.g. boost an S/R level that sits inside the value area or near the POC).
 - [ ] `regime.py` (Hurst, Lyapunov, regime_confidence)
 - [x] `multi_timeframe.py`: session-aware 15m→1h resampling (close-time labels), HTF alignment with previous-session daily values, MTF_TREND_ALIGN / MTF_MOMENTUM_ALIGN / MTF_REGIME_1D (`agent/040-multi-timeframe`)
+- [x] `multi_timeframe.py` `TIMEFRAME_WEIGHTS` = (1, 2, 3) for 15m/1h/1d; `SCORER_VERSION` 3 (`agent/130-mtf-weights-and-cumret`)
+- [ ] `multi_timeframe.py` follow-up: with 1:2:3 weights a full-strength daily trend against full-strength 15m and 1h trends nets to exactly 0 in `MTF_TREND_ALIGN`. Evaluate in the harness whether the weights (or a daily tie-break) matter.
 - [ ] `multi_timeframe.py` follow-up: the DB has only ~60 sessions of 15m data (yfinance caps 15m history at 60 days), so 1h EMA_50 warmup eats ~7 sessions and there is too little intraday history to backtest MTF signals. Consider storing 15m bars continuously from now on and/or ingesting yfinance 1h bars (730-day cap) as a separate interval.
 - [x] `multi_timeframe.py` follow-up: `scorer.py` should call `mtf_alignment` only on recent 15m history plus enough daily bars for regime warmup (~251), one asset at a time (8 GB RAM). Done in `agent/060-scorer`: ≤1600 15m bars + ≤750 daily bars per asset.
 - [ ] `multi_timeframe.py` follow-up: holidays and special sessions (e.g. Muhurat trading, an evening session outside 09:15–15:30) make `resample_ohlcv` raise on out-of-session bars. Decide whether to drop them or support per-date session bounds.
