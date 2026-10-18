@@ -27,7 +27,7 @@ anything that changes the architecture.
 ## Layout
 
 ```
-main.py                         CLI: setup | ingest | run | status | gaps
+main.py                         CLI: setup | ingest | run | status | gaps | dq | score | evaluate
 investbot/config/               settings (.env), tickers, tax regimes
 investbot/data/                 SQLAlchemy models, db session, seed, ingestion (yfinance)
 investbot/scheduler/            APScheduler jobs
@@ -67,6 +67,20 @@ Then: fundamental scoring, sentiment (FinBERT, `ProsusAI/finbert`, never bag-of-
 the allocation layer (Black-Litterman ↔ risk parity blended by regime_confidence, PID execution),
 tax layer, backtesting, Streamlit dashboard.
 Open tasks are tracked in `docs/BACKLOG.md`. If it doesn't exist yet, create it from this list.
+
+## Current priorities (set by Ankit, 2026-10-18; the planner must follow these)
+
+1. **Evaluation before tuning.** Build and use the walk-forward forward-return harness
+   (`investbot/evaluation/`, task 100-eval-harness). Until it exists and has produced a first report,
+   don't schedule new scoring layers, weight changes or allocation work.
+2. Small decided follow-ups in `tools/agents/inbox/` (110–140).
+3. **Fundamentals are paused** (080/090 parked) until (a) the harness exists and (b) fundamentals are
+   **point-in-time**: a filing's numbers count only from its publication date, or conservatively from
+   period end + 45 days (quarterly) / + 60 days (annual), per SEBI LODR Reg. 33. yfinance statements carry
+   period-end dates, not filing dates, so using them as of period end is lookahead. Balance-sheet and
+   cash-flow rules also wait for Ankit's notes from *How to Read Financial Statements*. Don't invent them.
+4. After the harness: whatever its first report says is most promising, then the batch-scoring path
+   that backtests need, then sentiment/allocation.
 
 ## Non-negotiable engineering rules
 

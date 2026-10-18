@@ -19,6 +19,8 @@ model: opus   # ONLY for maths-heavy or lookahead-sensitive work (numerical meth
 <Testable bullets. Always include: tests added and green, no lookahead, no dropna() in compute functions.>
 
 Rules:
+- Follow the "Current priorities" section of CLAUDE.md strictly. It overrides the build order.
+- Check `tools/agents/inbox/` on main: tasks there are already scheduled. Don't duplicate them.
 - One task is roughly 1–3 hours of focused work for one agent, touching one module or a tight group of modules.
 - Follow the build order. Don't schedule work whose dependencies aren't done; use `depends`.
 - Tasks that can run in parallel must touch different files.
