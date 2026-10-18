@@ -45,6 +45,12 @@ NSE_MARKET_OPEN = "09:15"
 NSE_MARKET_CLOSE = "15:30"
 TIMEZONE = "Asia/Kolkata"
 
+# ── Portfolio Constraints ────────────────────────────────
+# Pending decision (docs/DECISIONS_PENDING.md, task 130): the plan's user-profile
+# defaults are 20% / 40%; these system-wide caps are deliberately tighter.
+MAX_POSITION_WEIGHT = 0.15  # max weight of one asset in a target portfolio
+MAX_SECTOR_WEIGHT = 0.35    # max combined weight of one sector
+
 # ── Retry Config ──────────────────────────────────────────
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
