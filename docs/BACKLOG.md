@@ -69,6 +69,12 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] Equity grandfathering of pre-1 Feb 2018 cost (Section 112A) is not modelled; irrelevant while paper trading starts now.
 - [ ] Brokerage for crypto is the equity flat ₹20 placeholder; model exchange percentage fees when the crypto engine exists.
 
+## Phase 5b: allocation
+- [x] `trading/risk.py`: `log_returns`, `estimate_covariance` (point-in-time `as_of`, Ledoit-Wolf constant-correlation shrinkage, NaN-robust exclusions), `risk_parity_weights` (ERC, Spinu Newton), `inverse_volatility_weights`, `risk_contributions`, `portfolio_volatility`, `cap_weights` (position + sector caps) (`agent/130-risk-covariance-parity`)
+- [ ] Risk follow-up: `assets.sector` is NULL for non-equity; the allocator must map those to a label (e.g. the asset class) before calling `cap_weights`, which raises on a missing sector.
+- [ ] Risk follow-up: `estimate_covariance` uses the close-to-close returns of whatever frame it is given. When the eval/backtest layer calls it, build `close` from `adj_close` (dividends and splits) so a split day is not a fake -50% return; `log_returns` does not detect corporate actions.
+- [ ] Risk follow-up: assets excluded for short history (new listings like TMPV.NS) get no risk-parity weight; decide in the allocator (task 140) how they enter the blend.
+
 ## Later phases
 See `CLAUDE.md` → Build order and the master plan.
 
