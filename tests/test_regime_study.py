@@ -683,6 +683,7 @@ def test_index_report_has_coverage_note_and_universe_effect(pit_reports):
     sec = text.split("## Universe effect")[1].split("## Options for Ankit")[0]
     rows = [ln for ln in sec.splitlines() if ln.startswith("| H")]
     assert len(rows) == len(res.tests)
+    assert [r.split(" ")[1] for r in rows] == res.tests["group"].tolist()   # pre-registered order
     assert "SCORER_VERSION" in text and "max price date 2025-05-16" in text
     assert "active-universe comparison" in text
     assert "calendar dates" in text and f"before {PIT_COMPLETE_FROM}" in text

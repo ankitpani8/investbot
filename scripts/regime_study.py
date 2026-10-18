@@ -367,8 +367,8 @@ _KEYS = ["section", "group", "name", "target", "horizon"]
 def universe_effect(index_tests: pd.DataFrame, active_tests: pd.DataFrame) -> pd.DataFrame:
     """Every pre-registered test: statistic, NW t, BH q and verdict in both universes."""
     cols = [*_KEYS, "mean", "t_nw", "q", "verdict"]
-    m = index_tests[cols].merge(active_tests[cols], on=_KEYS, how="outer",
-                                suffixes=("_index", "_active"), sort=False)
+    m = index_tests[cols].merge(active_tests[cols], on=_KEYS, how="left",
+                                suffixes=("_index", "_active"))       # the index table's order
     m["changed"] = m["verdict_index"] != m["verdict_active"]
     return m
 
@@ -451,8 +451,6 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
     w("## Setup\n")
     for line in _setup_universe_lines(info, end):
         w(line)
-    if index_mode and info["skipped"]:
-        w(f"- Skipped (< {MIN_STUDY_BARS} bars): {', '.join(info['skipped'])}.")
     oos = res.oos
     if len(oos):
         w(f"- Out-of-sample (OOS): {len(res.splits)} walk-forward test blocks of {TEST_MONTHS} "
