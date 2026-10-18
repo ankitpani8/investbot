@@ -62,6 +62,42 @@ fi
 # Any task left in active/ by a crashed run goes back to the queue.
 for f in "$A"/*.md; do [ -e "$f" ] && mv "$f" "$Q"/ && log "Requeued stale $(basename "$f")"; done
 
+# A crash can leave worktrees registered whose directories are gone or half-written.
+git -C "$REPO" worktree prune 2>/dev/null
+
+# Inbox: task files committed to tools/agents/inbox/ on origin/main are imported once.
+# This lets tasks be added from anywhere (GitHub, another session) without touching this machine.
+import_inbox() {
+  git -C "$REPO" fetch -q origin 2>/dev/null || return
+  local f id
+  for f in $(git -C "$REPO" ls-tree --name-only origin/main tools/agents/inbox/ 2>/dev/null | grep '\.md$' | grep -v '/README\.md$'); do
+    id=$(basename "$f" .md)
+    [ -e "$Q/$id.md" ] || [ -e "$A/$id.md" ] || [ -e "$D/$id.md" ] || [ -e "$B/$id.md" ] && continue
+    git -C "$REPO" show "origin/main:$f" > "$Q/$id.md" && log "Imported inbox task $id"
+  done
+}
+
+# Why is nothing claimable? Park tasks whose dependencies can never be satisfied.
+explain_idle() {
+  local f d id reasons waiting=""
+  for f in "$Q"/*.md; do
+    [ -e "$f" ] || continue
+    id=$(basename "$f" .md); reasons=""
+    for d in $(deps_of "$f"); do
+      if [ -e "$D/$d.md" ]; then continue
+      elif [ -e "$B/$d.md" ]; then reasons+=" $d(blocked)"
+      elif [ -e "$Q/$d.md" ] || [ -e "$A/$d.md" ]; then waiting+=" $id<-$d"
+      else reasons+=" $d(unknown)"
+      fi
+    done
+    if [ -n "$reasons" ]; then
+      { echo; echo "## Blocked $(date '+%F %T')"; echo "Unsatisfiable dependencies:$reasons"; } >>"$f"
+      mv "$f" "$B"/ 2>/dev/null && log "PARKED $id: unsatisfiable dependencies:$reasons"
+    fi
+  done
+  [ -n "$waiting" ] && log "Idle: queued tasks waiting on running/queued work:$waiting"
+}
+
 deps_of() { sed -n 's/^depends:[[:space:]]*//p' "$1" | head -1 | tr -d '[],' ; }
 
 claim() {   # prints claimed task path, or nothing
@@ -194,7 +230,8 @@ plan() {   # refill the queue when nothing is claimable
     local pwt="$WT/_planner"
     git -C "$REPO" fetch -q origin
     git -C "$REPO" worktree remove --force "$pwt" 2>/dev/null
-    git -C "$REPO" worktree add -q --detach "$pwt" origin/main || exit 0
+    git -C "$REPO" worktree prune 2>/dev/null
+    git -C "$REPO" worktree add -q -f --detach "$pwt" origin/main || { WID=planner log "Planner worktree creation failed"; exit 0; }
     local existing; existing=$(ls "$D" "$A" "$B" 2>/dev/null | grep '\.md$' | sed 's/\.md$//' | sort -u | tr '\n' ' ')
     local prompt
     prompt="$(sed -e "s|{{QUEUE}}|$Q|g" -e "s|{{EXISTING}}|$existing|g" "$REPO/tools/agents/prompts/planner.md")"
@@ -226,6 +263,8 @@ worker() {
          && flock -n "$LOCKS/plan.lock" true; then
         log "Queue empty and planner has nothing left; exiting"; break
       fi
+      # Every ~10 min of idling, say why (and park dead-end tasks) instead of going silent.
+      if [ $((idle % 5)) = 1 ]; then import_inbox; explain_idle; fi
       sleep 120; continue
     fi
     idle=0
@@ -233,6 +272,7 @@ worker() {
   done
 }
 
+import_inbox
 log "Runner start: repo=$REPO workers=$WORKERS worker=$WORKER_MODEL/$WORKER_EFFORT planner=$PLANNER_MODEL/$PLANNER_EFFORT effort_flag=$HAS_EFFORT max_tasks=$MAX_TASKS"
 if [ -f "$AG/runner.pid" ] && kill -0 "$(cat "$AG/runner.pid")" 2>/dev/null; then
   echo "A runner is already running (pid $(cat "$AG/runner.pid")). Stop it with: touch $AG/STOP"; exit 1
