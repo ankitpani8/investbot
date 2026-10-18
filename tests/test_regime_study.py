@@ -15,7 +15,7 @@ from investbot.scoring.technical import regime as R
 CLOSE_12 = np.array([10.0, 10.5, 10.2, 10.8, 11.0, 10.7, 10.9, 11.4, 11.1, 11.6, 11.3, 11.9])
 
 
-def _bars(n: int, seed: int = 0, phi: float = 0.0) -> pd.DataFrame:
+def _bars(n: int, seed: int = 0, phi: float = 0.0, start: str = "2020-01-01") -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     e = rng.normal(0.0003, 0.015, n)
     r = np.empty(n)
@@ -27,7 +27,7 @@ def _bars(n: int, seed: int = 0, phi: float = 0.0) -> pd.DataFrame:
     high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.006, n)))
     low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.006, n)))
     vol = rng.integers(100_000, 1_000_000, n).astype(float)
-    idx = pd.bdate_range("2020-01-01", periods=n, name="date")
+    idx = pd.bdate_range(start, periods=n, name="date")
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close,
                          "volume": vol}, index=idx)
 
@@ -335,3 +335,372 @@ def test_runner_renders_and_never_overwrites(synthetic_study, tmp_path):
                     "## Verdict per pre-registered hypothesis", "## Options for Ankit"):
         assert heading in text
     assert "SCORER_VERSION" in text and "abc1234" in text and "peak RSS" in text
+
+
+# ──────────────────────────────────────────────────────────
+# Point-in-time universe (task 260): in-memory SQLite fixture
+# ──────────────────────────────────────────────────────────
+
+from datetime import date, timedelta  # noqa: E402
+
+PIT_START = "2023-01-02"
+PIT_BARS = 620                                   # .. 2025-05-16
+PIT_COMPLETE_FROM = date(2023, 9, 1)             # HURST_100 is finite from ~May 2023
+J = date(2025, 2, 3)                             # NEW.NS joins
+L = date(2025, 3, 3)                             # GONE.NS's first non-member session
+BACK_OUT, BACK_IN = date(2025, 3, 17), date(2025, 4, 1)   # BACK.NS exits, re-enters
+OLD = date(2019, 1, 1)
+
+#: ticker -> (bars, is_active, NIFTY50 stints)
+PIT_ASSETS = {
+    **{f"S{i:02d}.NS": (PIT_BARS, True, [(OLD, None)]) for i in range(10)},
+    "NEW.NS": (PIT_BARS, True, [(J, None)]),
+    "GONE.NS": (PIT_BARS, False, [(OLD, L - timedelta(days=1))]),
+    "BACK.NS": (PIT_BARS, True, [(OLD, BACK_OUT - timedelta(days=1)), (BACK_IN, None)]),
+    "NOPX.NS": (0, True, [(OLD, None)]),                 # member, no price rows
+    "SHORT.NS": (100, False, [(OLD, None)]),             # member, too few bars
+    "OUT.NS": (PIT_BARS, True, []),                      # active, never a member
+}
+
+
+def _pit_session():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from investbot.data.models import (
+        Asset,
+        AssetClass,
+        Base,
+        Exchange,
+        IndexMembership,
+        PriceDaily,
+    )
+
+    engine = create_engine("sqlite://", future=True, poolclass=StaticPool,
+                           connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine, expire_on_commit=False)()
+    ac = AssetClass(name="equity")
+    ex = Exchange(asset_class=ac, code="NSE", name="NSE", currency="INR")
+    s.add_all([ac, ex])
+    s.flush()
+    for k, (ticker, (n, active, stints)) in enumerate(PIT_ASSETS.items()):
+        a = Asset(exchange_id=ex.id, ticker=ticker, name=ticker, asset_type="stock",
+                  is_active=active)
+        s.add(a)
+        s.flush()
+        if n:
+            b = _bars(n, seed=500 + k, phi=0.1 * (k % 3), start=PIT_START)
+            s.add_all([PriceDaily(asset_id=a.id, date=d.date(), open=r.open, high=r.high,
+                                  low=r.low, close=r.close, adj_close=r.close,
+                                  volume=int(r.volume)) for d, r in b.iterrows()])
+        for f, to in stints:
+            s.add(IndexMembership(index_code="NIFTY50", asset_id=a.id, effective_from=f,
+                                  effective_to=to, source="test", verified=True))
+    s.commit()
+    return s
+
+
+def _pit_bars(ticker: str) -> pd.DataFrame:
+    k = list(PIT_ASSETS).index(ticker)
+    return _bars(PIT_ASSETS[ticker][0], seed=500 + k, phi=0.1 * (k % 3), start=PIT_START)
+
+
+def _old_build_study_panels(session, end=None):
+    """``scripts.regime_study.build_study_panels`` before task 260, verbatim."""
+    from investbot.evaluation.loader import active_tickers, load_daily_history
+    from scripts.regime_study import MIN_STUDY_BARS
+
+    real, null = {}, {}
+    skipped, n_rows = [], 0
+    first, last = None, None
+    for ticker in active_tickers(session):
+        bars = load_daily_history(session, ticker, end)
+        if len(bars) < MIN_STUDY_BARS:
+            skipped.append(f"{ticker} ({len(bars)} bars)")
+            continue
+        n_rows += len(bars)
+        first = bars.index[0] if first is None else min(first, bars.index[0])
+        last = bars.index[-1] if last is None else max(last, bars.index[-1])
+        real[ticker] = rs.asset_study_frames(bars)
+        null[ticker] = rs.asset_study_frames(rs.shuffled_null_bars(bars))
+    info = {"n_assets": len(real), "skipped": skipped, "n_rows": n_rows,
+            "first": first, "last": last}
+    return (rs.to_wide({t: f for t, (f, _) in real.items()}),
+            rs.to_wide({t: y for t, (_, y) in real.items()}),
+            rs.to_wide({t: f for t, (f, _) in null.items()}),
+            rs.to_wide({t: y for t, (_, y) in null.items()}),
+            info)
+
+
+@pytest.fixture(scope="module")
+def pit():
+    """One DB; the index panels (with the active comparison) and the old/new active panels."""
+    pytest.importorskip("talib")
+    from scripts import regime_study as runner
+
+    s = _pit_session()
+    try:
+        index = runner.build_study_panels(s, universe="index", complete_from=PIT_COMPLETE_FROM,
+                                          compare_active=True)
+        active = runner.build_study_panels(s, universe="active")
+        old = _old_build_study_panels(s)
+    finally:
+        s.close()
+    return {"index": index, "active": active, "old": old}
+
+
+def _assert_panels_equal(a: dict, b: dict):
+    assert list(a) == list(b)
+    for k in a:
+        pd.testing.assert_frame_equal(a[k], b[k], check_exact=True, obj=k)
+
+
+def test_active_universe_is_the_pre_260_study(pit):
+    new, old = pit["active"], pit["old"]
+    for a, b in zip(new[:4], old[:4]):
+        _assert_panels_equal(a, b)
+    assert {k: v for k, v in new[4].items() if k != "universe"} == old[4]
+    assert new[4]["universe"] == "active"
+    assert sorted(new[0]["REGIME"].columns) == sorted(
+        t for t, (n, act, _) in PIT_ASSETS.items() if act and n >= 251)
+    r_new, r_old = rs.run_study(*new[:4]), rs.run_study(*old[:4])
+    pd.testing.assert_frame_equal(r_new.tests, r_old.tests, check_exact=True)
+    pd.testing.assert_frame_equal(r_new.churn, r_old.churn, check_exact=True)
+
+
+def test_index_comparison_panels_equal_the_active_universe(pit):
+    """The active panels built in the index pass (incl. OUT.NS, never a member) are the
+    active universe's panels."""
+    for a, b in zip(pit["index"][4]["active_panels"], pit["active"][:4]):
+        _assert_panels_equal(a, b)
+    assert pit["index"][4]["n_active"] == pit["active"][4]["n_assets"]
+
+
+def _member(ticker: str, dates: pd.DatetimeIndex) -> np.ndarray:
+    """Hand-written point-in-time membership with the test's COMPLETE_FROM fallback."""
+    n, active, stints = PIT_ASSETS[ticker]
+    out = np.zeros(len(dates), dtype=bool)
+    for f, to in stints:
+        out |= (dates >= pd.Timestamp(f)) & ((dates <= pd.Timestamp(to)) if to else True)
+    early = dates < pd.Timestamp(PIT_COMPLETE_FROM)
+    out[early] = active
+    return out
+
+
+def test_index_universe_masks_features_on_non_member_dates_only(pit):
+    from scripts import regime_study as runner
+
+    feats, tg, nfeats, ntg, info = pit["index"]
+    studied = {t for t, (n, _, st) in PIT_ASSETS.items() if st and n >= runner.MIN_STUDY_BARS}
+    assert set(feats["REGIME"].columns) == studied              # OUT.NS: never a member
+    assert info["n_members"] == 15 and "NOPX.NS" not in feats["REGIME"].columns
+    assert "SHORT.NS (100 bars)" in info["skipped"]
+    assert info["priced"] == {t for t, (n, _, st) in PIT_ASSETS.items() if st and n}
+    for ticker in studied:
+        bars = _pit_bars(ticker)
+        f_full, y_full = rs.asset_study_frames(bars)
+        nf_full, ny_full = rs.asset_study_frames(rs.shuffled_null_bars(bars))
+        m = _member(ticker, bars.index)
+        for col in rs.STUDY_FEATURES:
+            got = feats[col][ticker].reindex(bars.index)
+            exp = f_full[col].where(m)
+            pd.testing.assert_series_equal(got, exp, check_names=False, check_exact=True)
+            assert got[~m].isna().all()
+            ngot = nfeats[col][ticker].reindex(bars.index)
+            pd.testing.assert_series_equal(ngot, nf_full[col].where(m), check_names=False,
+                                           check_exact=True)
+        for col in tg:                                          # targets never masked
+            pd.testing.assert_series_equal(tg[col][ticker].reindex(bars.index), y_full[col],
+                                           check_names=False, check_exact=True)
+            pd.testing.assert_series_equal(ntg[col][ticker].reindex(bars.index), ny_full[col],
+                                           check_names=False, check_exact=True)
+    # the masking is not vacuous: finite values exist on both sides of each change
+    h = feats[rs.HURST_COL]
+    idx = h.index
+    late = idx >= pd.Timestamp(PIT_COMPLETE_FROM)
+    assert h.loc[late & (idx < pd.Timestamp(J)), "NEW.NS"].isna().all()
+    assert h.loc[idx >= pd.Timestamp(J), "NEW.NS"].notna().all()
+    assert h.loc[(idx >= pd.Timestamp(L)), "GONE.NS"].isna().all()
+    assert h.loc[late & (idx < pd.Timestamp(L)), "GONE.NS"].notna().all()
+    gap = (idx >= pd.Timestamp(BACK_OUT)) & (idx < pd.Timestamp(BACK_IN))
+    assert gap.any() and h.loc[gap, "BACK.NS"].isna().all()
+    assert h.loc[idx >= pd.Timestamp(BACK_IN), "BACK.NS"].notna().all()
+    # a target window of GONE.NS still runs past its exit
+    er = tg["FWD_ER_20"]["GONE.NS"]
+    assert er[(idx < pd.Timestamp(L)) & (idx >= pd.Timestamp(L) - pd.Timedelta(days=10))].notna().all()
+
+
+def test_dates_before_complete_from_use_the_active_today_fallback(pit):
+    feats = pit["index"][0]
+    h = feats[rs.HURST_COL]
+    early = h.index < pd.Timestamp(PIT_COMPLETE_FROM)
+    warm = early & h["S00.NS"].notna().to_numpy()                 # HURST_100 out of warmup
+    assert warm.sum() > 20
+    # NEW.NS (active today) counts before its stint starts; GONE.NS (inactive today) does
+    # not, although its stint covers those dates
+    assert h.loc[warm, "NEW.NS"].notna().all()
+    assert h.loc[warm, "GONE.NS"].isna().all()
+    m = pit["index"][4]["membership"]
+    assert m.loc[m.index < pd.Timestamp(PIT_COMPLETE_FROM), "NEW.NS"].all()
+    assert not m.loc[m.index < pd.Timestamp(PIT_COMPLETE_FROM), "GONE.NS"].any()
+
+
+def test_membership_used_on_t_is_membership_as_of_t_and_truncation_invariant(pit):
+    """Truncating the price history (and the membership query) at t leaves every
+    feature cell <= t unchanged on the sourced dates (>= COMPLETE_FROM); NEW.NS is NaN
+    before J in both. Before COMPLETE_FROM the rule is "active today" by definition, so
+    a ticker whose first stint starts after t (NEW.NS) is only loaded by the full run
+    (as in ``panel.build_dataset``; 0 such dates on the real data)."""
+    from scripts import regime_study as runner
+
+    full = pit["index"][0]
+    s = _pit_session()
+    try:
+        for t in (date(2025, 1, 15), date(2025, 3, 20)):     # before J; inside BACK's gap
+            trunc = runner.build_study_panels(s, t, universe="index",
+                                              complete_from=PIT_COMPLETE_FROM)[0]
+            early = full["REGIME"].index < pd.Timestamp(PIT_COMPLETE_FROM)
+            if t < J:
+                assert full[rs.HURST_COL].loc[early, "NEW.NS"].notna().any()
+            for col, F in full.items():
+                ref = F.loc[(F.index <= pd.Timestamp(t)) & ~early]
+                got = trunc[col].reindex(index=ref.index, columns=ref.columns)
+                # NaN pattern exact; values to the tolerance of the regime truncation test
+                # (TA-Lib's recursive smoothers round differently on a shorter series)
+                np.testing.assert_array_equal(np.isnan(got.to_numpy()), np.isnan(ref.to_numpy()),
+                                              err_msg=f"{col} @ {t}")
+                np.testing.assert_allclose(got.to_numpy(), ref.to_numpy(), rtol=1e-9,
+                                           atol=1e-12, equal_nan=True, err_msg=f"{col} @ {t}")
+            if t < J:
+                assert "NEW.NS" not in trunc["REGIME"].columns   # not yet a member
+    finally:
+        s.close()
+
+
+def test_exit_then_reentry_is_not_a_flip_or_crossing():
+    idx = pd.bdate_range("2024-01-01", periods=7)
+    # a: trend, exits (NaN), re-enters as range: no flip across the gap
+    labels = pd.DataFrame({"a": [1, 1, np.nan, np.nan, 0, 0, 1],
+                           "b": [1, 1, 1, 1, 1, 1, 1]}, idx, dtype=float)
+    br = rs.label_base_rates(labels, idx).set_index("ticker")
+    assert br.loc["a", "flips_per_1000"] == pytest.approx(1000 * 1 / 3)     # pairs 0-1, 4-5, 5-6
+    assert br.loc["a", "n_bars"] == 5
+    assert br.loc["ALL", "flips_per_1000"] == pytest.approx(1000 * 1 / 9)
+    conf = pd.DataFrame({"a": [0.0, 0.05, np.nan, np.nan, 0.7, 0.6, 0.4]}, idx)
+    ch = rs.confidence_churn(conf, idx)
+    assert ch["n_pairs"] == 3
+    assert ch["cross_0.1_per_1000"] == 0
+    assert ch["cross_0.5_per_1000"] == pytest.approx(1000 * 1 / 3)          # 0.6 -> 0.4 only
+    assert ch["mean_abs_change"] == pytest.approx((0.05 + 0.1 + 0.2) / 3)
+
+
+def test_reentry_gap_on_the_index_panel(pit):
+    """BACK.NS's flips on the masked panel equal a hand count over adjacent member bars."""
+    lab = pit["index"][0]["REGIME"]["BACK.NS"]
+    a = lab.to_numpy()
+    pair = np.isfinite(a[1:]) & np.isfinite(a[:-1])
+    flips = int((pair & (a[1:] != a[:-1])).sum())
+    br = rs.label_base_rates(lab.to_frame(), lab.index).set_index("ticker")
+    assert br.loc["BACK.NS", "flips_per_1000"] == pytest.approx(1000 * flips / pair.sum())
+    gap = (lab.index >= pd.Timestamp(BACK_OUT)) & (lab.index < pd.Timestamp(BACK_IN))
+    first_in = int(np.argmax(lab.index >= pd.Timestamp(BACK_IN)))
+    assert not pair[first_in - 1] and gap[first_in - 1]          # re-entry pair is broken
+
+
+def test_coverage_summary_hand_example():
+    from scripts import regime_study as runner
+
+    dates = pd.bdate_range("2024-01-01", periods=4)
+    M = pd.DataFrame({"A": [True] * 4, "B": [True] * 4, "C": [True] * 4,
+                      "D": [False, False, True, True]}, index=dates)
+    # C has no prices; D is studied and joins on day 3
+    R_ = pd.DataFrame({**{f"X{i}": [1.0] * 4 for i in range(9)},
+                       "A": [1.0] * 4, "B": [np.nan, 1, 1, 1], "D": [0, 0, np.nan, 2.0]},
+                      index=dates)
+    M = pd.concat([M, pd.DataFrame(True, index=dates, columns=[f"X{i}" for i in range(9)])],
+                  axis=1)
+    out = runner.coverage_summary(M, R_, dates[1:], priced=set(M.columns) - {"C"},
+                                  complete_from=date(2024, 1, 2))
+    # day 2: 12 members (X0-8, A, B, C), 11 covered; day 3: 13, 11; day 4: 13, 12
+    assert out["coverage_mean"] == pytest.approx(np.mean([11 / 12, 11 / 13, 12 / 13]))
+    assert out["coverage_min"] == pytest.approx(11 / 13)
+    assert out["coverage_min_date"] == dates[2]
+    assert out["missing_prices"] == {"C": 3}
+    assert out["short_history"] == {}
+    assert out["fallback_dates"] == 1 and out["fallback_oos_dates"] == 0
+
+
+def test_mask_non_members_keeps_rows_and_copies():
+    from scripts import regime_study as runner
+
+    f = pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [4.0, 5.0, 6.0]})
+    out = runner.mask_non_members(f, np.array([True, False, True]))
+    assert out.index.equals(f.index) and out.loc[1].isna().all()
+    assert out.loc[[0, 2]].equals(f.loc[[0, 2]]) and f.notna().all().all()
+
+
+def test_no_dropna_in_the_study():
+    import inspect
+
+    from scripts import regime_study as runner
+
+    for mod in (rs, runner):
+        assert ".dropna(" not in inspect.getsource(mod)
+
+
+@pytest.fixture(scope="module")
+def pit_reports(tmp_path_factory):
+    pytest.importorskip("talib")
+    from scripts import regime_study as runner
+
+    root = tmp_path_factory.mktemp("pit_reports")
+    s = _pit_session()
+    out = {}
+    try:
+        for u in ("index", "active"):
+            report, res = runner.run(universe=u, session=s, report_dir=root, csv_dir=root,
+                                     report_date=date(2026, 10, 19),
+                                     complete_from=PIT_COMPLETE_FROM)
+            out[u] = (report.read_text(), res, report)
+    finally:
+        s.close()
+    return out
+
+
+def test_index_report_has_coverage_note_and_universe_effect(pit_reports):
+    from investbot.evaluation.report import SURVIVORSHIP_CAVEAT
+
+    text, res, report = pit_reports["index"]
+    assert report.name == "regime_study_20261019.md"
+    assert len(res.oos) > 0
+    assert "**Universe: point-in-time NIFTY50.**" in text and SURVIVORSHIP_CAVEAT not in text
+    assert "Coverage is below 100%" in text and "NOPX.NS" in text and "SHORT.NS" in text
+    assert "## Universe effect" in text and "verdict index" in text and "verdict active" in text
+    assert ("No verdict changes between the universes" in text
+            or "Verdicts that change between the universes" in text)
+    sec = text.split("## Universe effect")[1].split("## Options for Ankit")[0]
+    rows = [ln for ln in sec.splitlines() if ln.startswith("| H")]
+    assert len(rows) == len(res.tests)
+    assert "SCORER_VERSION" in text and "max price date 2025-05-16" in text
+    assert "active-universe comparison" in text
+    assert "calendar dates" in text and f"before {PIT_COMPLETE_FROM}" in text
+
+
+def test_active_report_keeps_the_old_layout(pit_reports):
+    from investbot.evaluation.report import SURVIVORSHIP_CAVEAT
+
+    text, _, report = pit_reports["active"]
+    assert report.name == "regime_study_20261019_b.md"        # never overwrites
+    assert text.count(SURVIVORSHIP_CAVEAT) == 2                # header and caveats
+    assert "## Universe effect" not in text and "Universe: point-in-time" not in text
+    assert "active stocks (today's NIFTY50 constituents" in text
+    assert "max price date" in text
+
+
+def test_active_report_tests_equal_old_study(pit_reports, pit):
+    """``run(universe="active")`` gives the same test table as the pre-260 panels."""
+    _, res, _ = pit_reports["active"]
+    old = rs.run_study(*pit["old"][:4])
+    pd.testing.assert_frame_equal(res.tests, old.tests, check_exact=True)
