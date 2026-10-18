@@ -52,10 +52,13 @@ from investbot.evaluation.metrics import (
 from investbot.evaluation.panel import (
     SCORE_COLUMNS,
     UNIVERSE_COLUMN,
+    VARIANT_TIMING_KEY,
     build_dataset,
     point_in_time_membership,
+    signal_columns,
     universe_coverage,
 )
+from investbot.evaluation.variants import VARIANT_COLUMNS, list_variant_columns
 from investbot.evaluation.walkforward import MIN_TRAIN_BARS, TEST_MONTHS, Split, oos_dates
 
 logger = logging.getLogger(__name__)
@@ -103,6 +106,12 @@ class RunInfo:
     complete_from: date | None = None
     n_active: int = 0
     peak_rss_mb: float = math.nan
+    #: Seconds in ``compute_variants`` (all assets) and in ``evaluate`` (all universes).
+    variants_s: float = math.nan
+    evaluate_s: float = math.nan
+    #: Columns ``evaluate`` was given (``signal_columns``); VAR_* among them.
+    n_signal_columns: int = 0
+    n_variant_columns: int = 0
 
 
 def universe_note(info: RunInfo) -> str:
@@ -254,6 +263,108 @@ def verdict_lines(head: pd.DataFrame, horizons) -> list[str]:
 
 
 # ──────────────────────────────────────────────────────────
+# Polarity variants (task 180)
+# ──────────────────────────────────────────────────────────
+
+_VARIANT_COLS = [
+    ("signal", "signal", _s), ("vs", "_vs", _s), ("h", "horizon", _int),
+    ("mean IC", "ic_mean", _f), ("ICIR", "icir", _f),
+    ("NW t", "ic_t_nw", lambda x: _f(x, "{:+.2f}")), ("BH q", "ic_q", lambda x: _f(x, "{:.3f}")),
+    ("block sign", "block_sign_share", lambda x: _f(x, "{:.2f}")),
+    ("promising", "promising", _f),
+    ("held CAGR net", "held_cagr_net", _pct),
+    ("held IR", "held_info_ratio_net", lambda x: _f(x, "{:+.2f}")),
+]
+
+
+def best_baseline(head: pd.DataFrame, h: int) -> pd.Series | None:
+    """The baseline with the highest ICIR at horizon h (as in the Verdict), or None."""
+    b = head[head["signal"].isin(BASELINE_COLUMNS) & (head["horizon"] == h)]
+    return b.loc[b["icir"].idxmax()] if b["icir"].notna().any() else None
+
+
+def _beats(v: pd.Series, prod: pd.Series | None, base: pd.Series | None) -> bool:
+    """Promising as designed (q, block sign, IC > 0) with an ICIR above both production
+    and the best baseline: the same bar the Verdict uses for "beats the baselines"."""
+    if not (bool(v["promising"]) and v["ic_mean"] > 0 and np.isfinite(v["icir"])):
+        return False
+    for other in (prod, base):
+        if other is not None and np.isfinite(other["icir"]) and not v["icir"] > other["icir"]:
+            return False
+    return True
+
+
+def variant_verdicts(head: pd.DataFrame, horizons) -> list[str]:
+    """One sentence per variant column: does it beat production *and* the best baseline?"""
+    rows = head.set_index(["signal", "horizon"])
+    lines = []
+    for var in list_variant_columns():
+        prod_name = VARIANT_COLUMNS[var]
+        won, deltas = [], []
+        for h in horizons:
+            if (var, h) not in rows.index:
+                continue
+            v = rows.loc[(var, h)]
+            prod = rows.loc[(prod_name, h)] if (prod_name, h) in rows.index else None
+            if _beats(v, prod, best_baseline(head, h)):
+                won.append(str(h))
+            if prod is not None:
+                deltas.append(f"h = {h} ΔICIR {_f(v['icir'] - prod['icir'])}, Δ held CAGR net "
+                              f"{_pct(v['held_cagr_net'] - prod['held_cagr_net'])}")
+        if not deltas:
+            continue
+        verdict = (f"beats production and the best baseline at h = {', '.join(won)}"
+                   if won else "beats production and the best baseline at no horizon")
+        lines.append(f"**{var}** (vs {prod_name}): {verdict} ({'; '.join(deltas)}).")
+    return lines
+
+
+def variants_section(head: pd.DataFrame, horizons, info: RunInfo) -> str:
+    """The "Polarity variants (pre-registered)" section, from the headline rows."""
+    out: list[str] = []
+    w = out.append
+    w("## Polarity variants (pre-registered)\n")
+    if not head["signal"].isin(list(VARIANT_COLUMNS)).any():
+        w("_No VAR_* columns in this run._\n")
+        return "\n".join(out) + "\n"
+    universe = ("the point-in-time index universe" if info.universe == "index"
+                else f"the {info.universe} universe")
+    w("Alternatives to the production oscillator polarity (follow momentum, fade to 0 at the "
+      "extremes), fixed by Ankit's 2026-10-18 decision before any results were seen and not "
+      "tuned (`investbot/evaluation/variants.py`): **VAR_OSC_REVERT** full mean reversion "
+      "(`osc_extreme = −1`: a pinned oscillator is a sell); **VAR_OSC_MOMENTUM** pure momentum "
+      "(`osc_extreme = +1`, no fade); **VAR_REGIME_POLARITY** production signals with every "
+      "oscillator-rule signal (RSI, STOCH, WILLR, CCI, ULTOSC, BB_POS, KC_POS, MFI) negated on "
+      "range-regime bars (revert in range, follow momentum otherwise). Each is aggregated with "
+      "the production weights, regime blend and multiplier; `_MOMENTUM` is its momentum-family "
+      f"score, compared with TECH_SCORE_MOMENTUM. Same walk-forward blocks, labels and "
+      f"Benjamini–Hochberg family as every other signal ({len(head)} tests), on {universe}. "
+      "Held CAGR net / IR: the open-to-open top-quintile portfolio (see above). "
+      "**Beats** = promising as designed (q < "
+      f"{PROMISING_Q:.2f}, block sign ≥ {PROMISING_SIGN_SHARE:.0%}, IC > 0) with an ICIR above "
+      "both production and the best baseline.\n")
+    order = ["TECH_SCORE", *[v for v in list_variant_columns() if VARIANT_COLUMNS[v] == "TECH_SCORE"],
+             "TECH_SCORE_MOMENTUM",
+             *[v for v in list_variant_columns() if VARIANT_COLUMNS[v] == "TECH_SCORE_MOMENTUM"]]
+    for h in horizons:
+        hh = _order(head[head["horizon"] == h], order).assign(
+            _vs=lambda d: d["signal"].map(lambda x: VARIANT_COLUMNS.get(x, "production")))
+        w(f"### h = {h}\n")
+        w(_table(hh, _VARIANT_COLS))
+        b = best_baseline(head, h)
+        if b is not None:
+            w(f"Best baseline at h = {h}: {b['signal']} (mean IC {_f(b['ic_mean'])}, ICIR "
+              f"{_f(b['icir'])}, held CAGR net {_pct(b['held_cagr_net'])}, held IR "
+              f"{_f(b['held_info_ratio_net'], '{:+.2f}')}).\n")
+    for line in variant_verdicts(head, horizons):
+        w(f"- {line}")
+    w("")
+    w("Production polarity is unchanged. Whether to switch it to a variant is Ankit's decision "
+      "(docs/DECISIONS_PENDING.md, \"Polarity variants: harness results\").\n")
+    return "\n".join(out) + "\n"
+
+
+# ──────────────────────────────────────────────────────────
 # Report
 # ──────────────────────────────────────────────────────────
 
@@ -355,6 +466,15 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
         w(f"- Runtime: {info.elapsed_s:.0f} s"
           + (f"; peak RSS {info.peak_rss_mb:.0f} MB" if info.peak_rss_mb == info.peak_rss_mb
              else "") + " (features computed one asset at a time, once for both universes).")
+    if info.variants_s == info.variants_s:
+        share = (info.n_variant_columns / info.n_signal_columns if info.n_signal_columns
+                 else math.nan)
+        w(f"- Added runtime of the {info.n_variant_columns} polarity-variant columns: "
+          f"{info.variants_s:.1f} s to compute them (signal and aggregation steps only, no "
+          f"indicator recompute), plus about {info.evaluate_s * share:.0f} s of evaluation "
+          f"(their {share:.0%} share of the {info.n_signal_columns} evaluated columns × "
+          f"{info.evaluate_s:.0f} s in `evaluate`, both universes; an estimate, not timed per "
+          "column).")
     w("")
 
     w("## Verdict\n")
@@ -405,6 +525,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       "the same periods. The OOS blocks are contiguous, so the curve spans the whole OOS window. "
       "No taxes.\n")
     w(_table(_order(head, portfolio_names), _HELD_COLS))
+
+    w(variants_section(head, horizons, info))
 
     if compare is not None and not compare.empty:
         w("## Universe effect: point-in-time index vs today's active stocks (OOS)\n")
@@ -577,6 +699,7 @@ def run_evaluation(
     from investbot.evaluation.loader import active_tickers
 
     t0 = time.monotonic()
+    timings: dict[str, float] = {}
     horizons = tuple(sorted(int(h) for h in horizons))
     own = session is None
     if own:
@@ -584,10 +707,13 @@ def run_evaluation(
         session = SessionLocal()
     try:
         features, labels = build_dataset(start=start, end=end, horizons=horizons, session=session,
-                                         universe=universe, index_code=index_code)
+                                         universe=universe, index_code=index_code,
+                                         variants=True, timings=timings)
         if features.empty:
             raise RuntimeError("no assets with enough daily bars to evaluate")
+        t_eval = time.monotonic()
         table, splits = evaluate(features, labels, horizons)
+        eval_s = time.monotonic() - t_eval
         if table.empty:
             raise RuntimeError("evaluation produced no metrics (too little history?)")
         active = active_tickers(session)
@@ -599,9 +725,11 @@ def run_evaluation(
             fa, la = active_subset(features, labels, active)
             if missing:      # active stocks outside the index universe (none for NIFTY50)
                 fm, lm = build_dataset(missing, start, end, horizons=horizons, session=session,
-                                       universe="active")
+                                       universe="active", variants=True, timings=timings)
                 fa, la = pd.concat([fa, fm]).sort_index(), pd.concat([la, lm]).sort_index()
+            t_eval = time.monotonic()
             compare, _ = evaluate(fa, la, horizons, splits=splits)
+            eval_s += time.monotonic() - t_eval
             extra = _coverage_info(session, index_code, start, end, features,
                                    oos_dates(splits), active, COMPLETE_FROM)
             extra["n_active"] = fa.index.get_level_values("ticker").nunique()
@@ -610,6 +738,10 @@ def run_evaluation(
         if own:
             session.close()
     dates = features.index.get_level_values("date")
+    sig_cols = signal_columns(features)
+    extra.update(variants_s=timings.get(VARIANT_TIMING_KEY, 0.0), evaluate_s=eval_s,
+                 n_signal_columns=len(sig_cols),
+                 n_variant_columns=sum(c in VARIANT_COLUMNS for c in sig_cols))
     info = RunInfo(n_assets=features.index.get_level_values("ticker").nunique(),
                    first_date=dates.min(), last_date=dates.max(), horizons=horizons,
                    start=start, elapsed_s=time.monotonic() - t0, universe=universe,

@@ -12,6 +12,12 @@ knowable at t's close. Only the evaluated columns are kept:
     SIG_<NAME>                          every confluence signal (``compute_signals``),
                                         prefixed because some names (VP_POS) are
                                         also upstream column names
+    VAR_*                               pre-registered polarity variants of TECH_SCORE
+                                        and TECH_SCORE_MOMENTUM (``variants.py``), from
+                                        the same frame (signal + aggregation steps only);
+                                        only with ``variants=True`` (``run_evaluation``
+                                        always sets it; off by default so the pre-180
+                                        panel, and its golden tests, stay unchanged)
     REGIME, REGIME_CONFIDENCE           conditioning variables, not signals
     BASE_*                              baseline factors (``baselines.py``)
 
@@ -38,6 +44,7 @@ Universe (``build_dataset(universe=...)``)
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 
 import numpy as np
@@ -47,6 +54,7 @@ from investbot.config.scoring_weights import FAMILIES
 from investbot.data.index_membership import COMPLETE_FROM
 from investbot.evaluation.baselines import compute_baselines
 from investbot.evaluation.labels import HORIZONS, forward_returns
+from investbot.evaluation.variants import compute_variants
 from investbot.scoring.technical.confluence import compute_signals
 from investbot.scoring.technical.scorer import MIN_BARS, compute_daily_frame
 
@@ -60,12 +68,29 @@ CONDITIONING_COLUMNS: tuple[str, ...] = ("REGIME", "REGIME_CONFIDENCE", UNIVERSE
 UNIVERSES: tuple[str, ...] = ("index", "active")
 
 
-def asset_features(bars: pd.DataFrame) -> pd.DataFrame:
-    """Evaluated feature columns for one asset's daily OHLCV (pure; no dropna)."""
+#: Key in the ``timings`` dict for the seconds spent in ``compute_variants``.
+VARIANT_TIMING_KEY: str = "variants_s"
+
+
+def asset_features(bars: pd.DataFrame, *, variants: bool = False,
+                   timings: dict[str, float] | None = None) -> pd.DataFrame:
+    """Evaluated feature columns for one asset's daily OHLCV (pure; no dropna).
+
+    ``variants`` adds the ``VAR_*`` columns (``variants.compute_variants`` on the
+    same frame). ``timings``, if given, accumulates that step's seconds under
+    ``VARIANT_TIMING_KEY`` (the runtime the variants add to feature building).
+    """
     frame = compute_daily_frame(bars)
     cols: dict[str, np.ndarray] = {c: frame[c].to_numpy(dtype=np.float64) for c in SCORE_COLUMNS}
-    for name, values in compute_signals(frame).items():
+    signals = compute_signals(frame)
+    for name, values in signals.items():
         cols[SIGNAL_PREFIX + name] = values
+    if variants:
+        t0 = time.perf_counter()
+        cols.update(compute_variants(frame, signals=signals))
+        if timings is not None:
+            timings[VARIANT_TIMING_KEY] = (timings.get(VARIANT_TIMING_KEY, 0.0)
+                                           + time.perf_counter() - t0)
     for c in ("REGIME", "REGIME_CONFIDENCE"):
         cols[c] = frame[c].to_numpy(dtype=np.float64)
     cols.update(compute_baselines(bars))
@@ -123,6 +148,8 @@ def build_dataset(
     universe: str = "index",
     index_code: str = "NIFTY50",
     complete_from: date = COMPLETE_FROM,
+    variants: bool = False,
+    timings: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     (features, labels), both indexed by (date, ticker) and aligned row for row.
@@ -130,7 +157,8 @@ def build_dataset(
     ``assets`` defaults to every active stock (``universe="active"``) or every
     member of ``index_code`` in [start, end] (``universe="index"``, which also
     adds ``IN_UNIVERSE``; see the module docstring). Assets with fewer than
-    ``MIN_BARS`` bars (including none) are skipped (logged).
+    ``MIN_BARS`` bars (including none) are skipped (logged). ``variants``,
+    ``timings``: see ``asset_features``.
     """
     from investbot.evaluation.loader import (
         active_tickers,
@@ -160,7 +188,7 @@ def build_dataset(
             if len(bars) < MIN_BARS:
                 logger.info("evaluation: skipping %s (%d bars)", ticker, len(bars))
                 continue
-            f = asset_features(bars)
+            f = asset_features(bars, variants=variants, timings=timings)
             if universe == "index":
                 member = point_in_time_membership(
                     membership_for(session, index_code, [ticker], bars.index), active,
@@ -185,5 +213,5 @@ def build_panel(assets: list[str] | None = None, start: date | None = None,
 
 
 def signal_columns(features: pd.DataFrame) -> list[str]:
-    """Columns to evaluate as signals: scores, SIG_*, baselines (not REGIME*, IN_UNIVERSE)."""
+    """Columns to evaluate as signals: scores, SIG_*, VAR_*, baselines (not REGIME*, IN_UNIVERSE)."""
     return [c for c in features.columns if c not in CONDITIONING_COLUMNS]

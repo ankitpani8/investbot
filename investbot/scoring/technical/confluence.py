@@ -33,6 +33,11 @@ Pipeline
        TECH_SCORE exactly. ``TECH_REASONS`` lists the ``REASONS_TOP_N``
        largest by absolute value, e.g. ``"price vs EMA 200: bullish (+0.08)"``.
 
+    ``compute_signals`` is step 1 and ``aggregate_signals`` is steps 2-4 on any
+    signal dict, so the evaluation harness can score altered signals (polarity
+    variants, ``investbot/evaluation/variants.py``) through the production code
+    path. ``compute_confluence`` = both plus the reasons.
+
 Signal rules (constants below; ATR = ATR_14)
     trend
         EMA_<n>_POS      tanh((close - EMA_n) / (EMA_POS_ATR_SCALE * ATR)), n = 20, 50, 200
@@ -87,7 +92,9 @@ Oscillator rule
     ``±OSC_EXTREME_VALUE`` at the extreme (floor/ceiling): overbought is
     exhaustion, so a pinned oscillator stops adding conviction. With the
     default 0.0, RSI 85 reads +0.5 and RSI 100 reads 0. See
-    docs/DECISIONS_PENDING.md for the alternatives.
+    docs/DECISIONS_PENDING.md for the alternatives. The signals on this rule
+    are ``OSCILLATOR_SIGNALS``; ``compute_signals(df, osc_extreme=x)`` evaluates
+    them with x at the extremes instead (harness only, production uses None).
 
 No lookahead
     Every rule is a function of the same bar's columns, plus the previous bar
@@ -357,6 +364,8 @@ class Signal:
     label: str
     inputs: tuple[str, ...]
     fn: Callable[..., np.ndarray]
+    #: Uses the oscillator rule: ``fn`` also takes ``extreme`` (see ``oscillator``).
+    oscillator: bool = False
 
 
 def _lag(x: np.ndarray, k: int) -> np.ndarray:
@@ -418,10 +427,17 @@ def _roc(roc, natr):
         return np.tanh(roc / (natr * np.sqrt(10.0)))
 
 
-def _kc_pos(close, mid, upper):
+def _kc_pos(close, mid, upper, extreme=None):
     with np.errstate(divide="ignore", invalid="ignore"):
         rel = (close - mid) / (upper - mid)
-    return oscillator(rel, -2.0, -1.0, 0.0, 1.0, 2.0)
+    return oscillator(rel, -2.0, -1.0, 0.0, 1.0, 2.0, extreme)
+
+
+def _osc(floor: float, lo: float, mid: float, hi: float, ceil: float, shift: float = 0.0):
+    """Oscillator-rule signal fn on one input (``shift`` is added first, e.g. WILLR + 100)."""
+    def fn(x, extreme=None):
+        return oscillator(x + shift if shift else x, floor, lo, mid, hi, ceil, extreme)
+    return fn
 
 
 def _flow(line, volume):
@@ -478,25 +494,26 @@ SIGNALS: tuple[Signal, ...] = (
            lambda p, m: _clip_unit((p - m) / VORTEX_SCALE)),
     Signal("FIB_SWING", TREND, "last confirmed swing", ("FIB_SWING_DIR",), lambda d: d),
     # momentum
-    Signal("RSI", MOMENTUM, "RSI 14", ("RSI_14",), lambda x: oscillator(x, 0, 30, 50, 70, 100)),
-    Signal("STOCH", MOMENTUM, "Stochastic %K", ("STOCHk_14_3_3",),
-           lambda x: oscillator(x, 0, 20, 50, 80, 100)),
-    Signal("WILLR", MOMENTUM, "Williams %R", ("WILLR_14",),
-           lambda x: oscillator(x + 100.0, 0, 20, 50, 80, 100)),
-    Signal("CCI", MOMENTUM, "CCI 20", ("CCI_20",), lambda x: oscillator(x, -250, -100, 0, 100, 250)),
+    Signal("RSI", MOMENTUM, "RSI 14", ("RSI_14",), _osc(0, 30, 50, 70, 100), oscillator=True),
+    Signal("STOCH", MOMENTUM, "Stochastic %K", ("STOCHk_14_3_3",), _osc(0, 20, 50, 80, 100),
+           oscillator=True),
+    Signal("WILLR", MOMENTUM, "Williams %R", ("WILLR_14",), _osc(0, 20, 50, 80, 100, shift=100.0),
+           oscillator=True),
+    Signal("CCI", MOMENTUM, "CCI 20", ("CCI_20",), _osc(-250, -100, 0, 100, 250), oscillator=True),
     Signal("ULTOSC", MOMENTUM, "Ultimate oscillator", ("ULTOSC_7_14_28",),
-           lambda x: oscillator(x, 0, 30, 50, 70, 100)),
+           _osc(0, 30, 50, 70, 100), oscillator=True),
     Signal("MACD_HIST", MOMENTUM, "MACD histogram", ("MACDh_12_26_9",), _macd_hist),
     Signal("ROC", MOMENTUM, "10-bar rate of change", ("ROC_10", "NATR_14"), _roc),
     # volatility
     Signal("BB_POS", VOLATILITY, "position in Bollinger bands", ("BBP_20_2.0",),
-           lambda x: oscillator(x, -0.5, 0.0, 0.5, 1.0, 1.5)),
+           _osc(-0.5, 0.0, 0.5, 1.0, 1.5), oscillator=True),
     Signal("KC_POS", VOLATILITY, "position in Keltner channel",
-           ("close", "KCM_20_2.0", "KCU_20_2.0"), _kc_pos),
+           ("close", "KCM_20_2.0", "KCU_20_2.0"), _kc_pos, oscillator=True),
     # volume
     Signal("OBV_FLOW", VOLUME, "OBV flow", ("OBV", "volume"), _flow),
     Signal("AD_FLOW", VOLUME, "accumulation/distribution flow", ("AD", "volume"), _flow),
-    Signal("MFI", VOLUME, "money flow index", ("MFI_14",), lambda x: oscillator(x, 0, 20, 50, 80, 100)),
+    Signal("MFI", VOLUME, "money flow index", ("MFI_14",), _osc(0, 20, 50, 80, 100),
+           oscillator=True),
     Signal("RVOL_CONFIRM", VOLUME, "relative volume on the bar", ("RVOL_20", "LOGRET_1"), _rvol_confirm),
     # pattern
     Signal("CANDLES", PATTERN, "candle patterns",
@@ -511,6 +528,9 @@ SIGNALS: tuple[Signal, ...] = (
            lambda x: x),
 )
 
+#: Signals built on the oscillator rule: the ones ``osc_extreme`` changes.
+OSCILLATOR_SIGNALS: frozenset[str] = frozenset(s.name for s in SIGNALS if s.oscillator)
+
 # ──────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────
@@ -521,19 +541,22 @@ def list_confluence_columns() -> list[str]:
     return ["TECH_SCORE", *(f"TECH_SCORE_{f.upper()}" for f in FAMILIES), "TECH_REASONS"]
 
 
-def compute_signals(df: pd.DataFrame) -> dict[str, np.ndarray]:
+def compute_signals(df: pd.DataFrame, *, osc_extreme: float | None = None) -> dict[str, np.ndarray]:
     """Every signal in ``SIGNALS`` whose inputs are all present, as float64 in [-1, 1].
 
     Each rule propagates NaN itself (warmup in → NaN out), so a rule may also
     give a missing input a meaning (SR_POSITION with no resistance above).
+    ``osc_extreme`` is the value at the extremes of every signal in
+    ``OSCILLATOR_SIGNALS`` (None = ``OSC_EXTREME_VALUE``, production).
     """
     out: dict[str, np.ndarray] = {}
     for sig in SIGNALS:
         if not all(c in df.columns for c in sig.inputs):
             continue
         arrays = [df[c].to_numpy(dtype=np.float64) for c in sig.inputs]
+        kw = {"extreme": osc_extreme} if sig.oscillator else {}
         with np.errstate(invalid="ignore"):
-            values = np.asarray(sig.fn(*arrays), dtype=np.float64)
+            values = np.asarray(sig.fn(*arrays, **kw), dtype=np.float64)
         out[sig.name] = np.clip(values, -1.0, 1.0)     # NaN stays NaN
     return out
 
@@ -575,14 +598,22 @@ def compute_confluence(df: pd.DataFrame) -> dict[str, np.ndarray]:
         Keyed as ``list_confluence_columns()``. Scores are float64; TECH_SCORE is
         NaN until every family in the frame has a value. TECH_REASONS is an object array of lists of str.
     """
-    signals, fam_scores, contrib, has_score = _evaluate(df)
-    score = np.where(has_score, np.clip(contrib.sum(axis=1), -1.0, 1.0), np.nan)
-
-    out: dict[str, np.ndarray] = {"TECH_SCORE": score}
-    for j, fam in enumerate(FAMILIES):
-        out[f"TECH_SCORE_{fam.upper()}"] = fam_scores[:, j]
+    signals = compute_signals(df)
+    out, contrib, has_score = _aggregate(df, signals)
     out["TECH_REASONS"] = _reasons(list(signals), contrib, has_score)
     return out
+
+
+def aggregate_signals(df: pd.DataFrame, signals: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """
+    Steps 2-4 on given signals: family means, regime-blended weights, multiplier.
+
+    ``signals`` maps names in ``SIGNALS`` to arrays on ``df``'s bars (as from
+    ``compute_signals``, possibly altered); ``df`` supplies REGIME and
+    REGIME_CONFIDENCE. Returns ``TECH_SCORE`` and every ``TECH_SCORE_<FAMILY>``
+    (no reasons). ``compute_confluence`` runs exactly this on ``compute_signals(df)``.
+    """
+    return _aggregate(df, signals)[0]
 
 
 def add_confluence(df: pd.DataFrame) -> pd.DataFrame:
@@ -593,7 +624,8 @@ def add_confluence(df: pd.DataFrame) -> pd.DataFrame:
 
 def signal_contributions(df: pd.DataFrame) -> pd.DataFrame:
     """Per-signal contribution to TECH_SCORE; each row sums to TECH_SCORE (0 if NaN)."""
-    signals, _, contrib, _ = _evaluate(df)
+    signals = compute_signals(df)
+    _, contrib, _ = _aggregate(df, signals)
     return pd.DataFrame(contrib, index=df.index, columns=list(signals))
 
 
@@ -605,11 +637,10 @@ _FAMILY_OF = {s.name: s.family for s in SIGNALS}
 _LABEL_OF = {s.name: s.label for s in SIGNALS}
 
 
-def _evaluate(df: pd.DataFrame):
-    """Signals, family means (n, n_families), per-signal contributions (n, n_signals)
-    and the mask of bars where TECH_SCORE is defined."""
+def _aggregate(df: pd.DataFrame, signals: dict[str, np.ndarray]):
+    """(scores, per-signal contributions (n, n_signals), mask of bars where TECH_SCORE
+    is defined); scores = TECH_SCORE and the TECH_SCORE_<FAMILY> means."""
     n = len(df)
-    signals = compute_signals(df)
     names = list(signals)
     fam_idx = np.array([FAMILIES.index(_FAMILY_OF[s]) for s in names], dtype=np.int64)
     stack = np.column_stack([signals[s] for s in names]) if names else np.empty((n, 0))
@@ -633,7 +664,11 @@ def _evaluate(df: pd.DataFrame):
         # weight of one signal = multiplier * family weight / signals in the family
         share = np.where(in_frame, wm[:, -1:] * w / np.maximum(counts, 1), 0.0)
     contrib = np.where(complete[:, None], np.nan_to_num(stack) * share[:, fam_idx], 0.0)
-    return signals, fam_scores, contrib, complete
+    score = np.where(complete, np.clip(contrib.sum(axis=1), -1.0, 1.0), np.nan)
+    out: dict[str, np.ndarray] = {"TECH_SCORE": score}
+    for j, fam in enumerate(FAMILIES):
+        out[f"TECH_SCORE_{fam.upper()}"] = fam_scores[:, j]
+    return out, contrib, complete
 
 
 def _reasons(names: list[str], contrib: np.ndarray, has_score: np.ndarray) -> np.ndarray:
