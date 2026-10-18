@@ -31,7 +31,9 @@ from investbot.evaluation.evaluate import (
 from investbot.evaluation.labels import HORIZONS
 from investbot.evaluation.metrics import (
     MIN_NAMES,
+    REFERENCE_TRADE_VALUE,
     ROUND_TRIP_COST,
+    SLIPPAGE_PER_SIDE,
     statutory_round_trip_cost,
 )
 from investbot.evaluation.panel import SCORE_COLUMNS, build_dataset
@@ -204,8 +206,9 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     w(f"- Multiple testing: Benjamini–Hochberg over all {len(head)} signal × horizon tests. "
       f"**Promising** = BH q < {PROMISING_Q:.2f} and the IC sign holds in ≥ "
       f"{PROMISING_SIGN_SHARE:.0%} of test blocks.")
-    w(f"- Costs: round trip {ROUND_TRIP_COST:.2%} of traded value (statutory charges + "
-      f"brokerage alone are {statutory_round_trip_cost():.3%} on a ₹1 lakh order; slippage extra).")
+    w(f"- Costs: round trip {ROUND_TRIP_COST:.3%} of traded value = statutory charges and "
+      f"brokerage from `config/tax_regimes.py` on a ₹{REFERENCE_TRADE_VALUE / 1e5:g} lakh order "
+      f"({statutory_round_trip_cost():.3%}) + slippage {SLIPPAGE_PER_SIDE:.3%} per side.")
     if info.elapsed_s == info.elapsed_s:
         w(f"- Runtime: {info.elapsed_s:.0f} s.")
     w("")
@@ -235,7 +238,7 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     w(_table(_order(head, ["TECH_SCORE", *families, *BASELINE_COLUMNS]), _Q_COLS))
 
     w("## Cost reality check: top-quintile long-only (OOS)\n")
-    w(f"Equal weight, rebalanced every h bars; net = gross − turnover × {ROUND_TRIP_COST:.2%}. "
+    w(f"Equal weight, rebalanced every h bars; net = gross − turnover × {ROUND_TRIP_COST:.3%}. "
       "Universe = equal weight over all names in the same periods. Simple annualisation "
       "(mean period return × 252 / h); not compounded, no taxes. Each period runs from open[t+1] "
       "to close[t+h], so the overnight gap before the next entry is not held: absolute "

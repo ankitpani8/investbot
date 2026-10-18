@@ -41,20 +41,26 @@ from investbot.evaluation.stats import newey_west_tstat, normal_pvalue, spearman
 #: Fewer names than this on a date: the date is skipped.
 MIN_NAMES: int = 10
 N_QUANTILES: int = 5
-#: Round-trip cost of one equity delivery trade, as a fraction of the traded
-#: value: statutory charges (``statutory_round_trip_cost``, ~0.26% on a
-#: ₹1 lakh order incl. ₹20 + ₹20 brokerage) are already ~0.25%, the master
-#: plan's §2.8 figure is "~0.25-0.35%". 0.25% is the task's figure and the
-#: optimistic end: slippage comes on top. Change it here, not in the report.
-ROUND_TRIP_COST: float = 0.0025
-TRADING_DAYS: int = 252
+#: Order size at which the flat ₹20 brokerage is converted into a percentage.
+REFERENCE_TRADE_VALUE: float = 100_000.0
+#: Market-impact / spread allowance per side for liquid NIFTY50 names
+#: (2.5 bp). Not in config or the master plan; see docs/DECISIONS_PENDING.md.
+SLIPPAGE_PER_SIDE: float = 0.00025
 
 
-def statutory_round_trip_cost(trade_value: float = 100_000.0) -> float:
-    """Round-trip statutory + brokerage cost fraction from the current equity regime."""
+def statutory_round_trip_cost(trade_value: float = REFERENCE_TRADE_VALUE) -> float:
+    """Round-trip STT + stamp + exchange + SEBI + brokerage + GST from the current equity regime."""
     from investbot.trading.tax_rules import regime_params
     from investbot.trading.transaction_costs import round_trip_cost_pct
     return round_trip_cost_pct(trade_value, regime_params("IN_EQUITY_LISTED"))
+
+
+#: Round-trip cost of one equity delivery trade as a fraction of the traded
+#: value: statutory charges from ``investbot/config/tax_regimes.py`` at
+#: ``REFERENCE_TRADE_VALUE`` (0.270%) plus slippage on both sides (0.05%),
+#: ≈ 0.32%, inside the master plan's §2.8 "~0.25-0.35%".
+ROUND_TRIP_COST: float = statutory_round_trip_cost() + 2 * SLIPPAGE_PER_SIDE
+TRADING_DAYS: int = 252
 
 
 def joint_mask(S: pd.DataFrame, Y: pd.DataFrame, min_names: int = MIN_NAMES):

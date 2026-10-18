@@ -388,3 +388,9 @@ def test_evaluate_rows_and_report(synthetic_eval):
                        pd.Timestamp("2024-07-01").date())
     assert md.count(SURVIVORSHIP_CAVEAT) >= 2
     assert "## Verdict" in md and "Benjamini" in md
+
+
+def test_round_trip_cost_comes_from_config():
+    from investbot.evaluation import metrics as m
+    assert m.ROUND_TRIP_COST == pytest.approx(m.statutory_round_trip_cost() + 2 * m.SLIPPAGE_PER_SIDE)
+    assert 0.0025 <= m.ROUND_TRIP_COST <= 0.0035          # master plan §2.8: ~0.25-0.35%
