@@ -21,7 +21,11 @@ knowable at t's close. Only the evaluated columns are kept:
     REGIME, REGIME_CONFIDENCE           conditioning variables, not signals
     BASE_*                              baseline factors (``baselines.py``)
 
-Labels (``labels.py``) are computed from the same bars into a different frame.
+Labels (``labels.py``) are computed from the same bars into a different frame,
+together with the asset's ``corporate_actions`` (``load_actions``, ex-date <=
+``end``): cash dividends credited on their ex-date bars for the total-return
+labels, and the ex-date bars of splits that ``quality.detect_unadjusted_splits``
+flags, whose spanning label periods become NaN. Features never see either.
 ``start`` only trims the output; features always warm up on the full history.
 Bars after ``end`` are never loaded, so labels near ``end`` are NaN rather
 than reaching past it.
@@ -53,6 +57,8 @@ import pandas as pd
 from investbot.config.scoring_weights import FAMILIES
 from investbot.data.index_membership import COMPLETE_FROM
 from investbot.evaluation.baselines import compute_baselines
+from investbot.data.corporate_actions import dividends_on_bars
+from investbot.data.quality import SplitIssue, detect_unadjusted_splits
 from investbot.evaluation.labels import HORIZONS, forward_returns
 from investbot.evaluation.variants import compute_variants
 from investbot.scoring.technical.confluence import compute_signals
@@ -97,8 +103,42 @@ def asset_features(bars: pd.DataFrame, *, variants: bool = False,
     return pd.DataFrame(cols, index=bars.index)
 
 
-def asset_labels(bars: pd.DataFrame, horizons=HORIZONS) -> pd.DataFrame:
-    return pd.DataFrame(forward_returns(bars, horizons), index=bars.index)
+def asset_labels(bars: pd.DataFrame, horizons=HORIZONS, dividends: np.ndarray | None = None,
+                 invalid_from: np.ndarray | None = None) -> pd.DataFrame:
+    return pd.DataFrame(forward_returns(bars, horizons, dividends, invalid_from), index=bars.index)
+
+
+#: Label whose NaN'd periods are counted per split issue (the headline TR label).
+SPLIT_COUNT_STEM: str = "FWD_TR_RET"
+
+
+def split_flags(bars: pd.DataFrame, issues: list[SplitIssue]) -> np.ndarray:
+    """Bool per bar: True on the ex-date bar of each flagged split (``invalid_from``)."""
+    out = np.zeros(len(bars), dtype=bool)
+    idx = pd.DatetimeIndex(bars.index).normalize()
+    for issue in issues:
+        i = int(idx.searchsorted(pd.Timestamp(issue.ex_date), side="left"))
+        if i < len(idx):
+            out[i] = True
+    return out
+
+
+def label_inputs(bars: pd.DataFrame, actions: pd.DataFrame, ticker: str = ""
+                 ) -> tuple[np.ndarray, np.ndarray, list[SplitIssue]]:
+    """(dividends per bar, ``invalid_from`` split flags, the split issues) for one asset."""
+    issues = detect_unadjusted_splits(bars, actions, ticker=ticker)
+    return dividends_on_bars(bars.index, actions), split_flags(bars, issues), issues
+
+
+def nan_periods(bars: pd.DataFrame, horizons, keep: np.ndarray, issue: SplitIssue,
+                dividends: np.ndarray | None = None) -> int:
+    """(bar, horizon) periods of ``SPLIT_COUNT_STEM`` inside ``keep`` that ``issue``'s flag NaNs."""
+    flag = split_flags(bars, [issue])
+    base = forward_returns(bars, horizons, dividends)
+    flagged = forward_returns(bars, horizons, dividends, flag)
+    return int(sum((np.isfinite(base[f"{SPLIT_COUNT_STEM}_{h}"])
+                    & ~np.isfinite(flagged[f"{SPLIT_COUNT_STEM}_{h}"]))[keep].sum()
+                   for h in horizons))
 
 
 def _stack(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -150,6 +190,7 @@ def build_dataset(
     complete_from: date = COMPLETE_FROM,
     variants: bool = False,
     timings: dict[str, float] | None = None,
+    label_info: dict[str, dict] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     (features, labels), both indexed by (date, ticker) and aligned row for row.
@@ -158,10 +199,14 @@ def build_dataset(
     member of ``index_code`` in [start, end] (``universe="index"``, which also
     adds ``IN_UNIVERSE``; see the module docstring). Assets with fewer than
     ``MIN_BARS`` bars (including none) are skipped (logged). ``variants``,
-    ``timings``: see ``asset_features``.
+    ``timings``: see ``asset_features``. ``label_info``, if given, receives one
+    entry per evaluated ticker: ``dividend_rows`` (dividend rows with an ex-date
+    in the output window) and ``splits`` (``(SplitIssue, periods NaN'd)`` pairs,
+    counted on ``SPLIT_COUNT_STEM`` over all horizons in the output window).
     """
     from investbot.evaluation.loader import (
         active_tickers,
+        load_actions,
         load_daily_history,
         membership_for,
         universe_tickers,
@@ -194,10 +239,22 @@ def build_dataset(
                     membership_for(session, index_code, [ticker], bars.index), active,
                     complete_from)
                 f[UNIVERSE_COLUMN] = member[ticker].to_numpy(dtype=bool)
-            y = asset_labels(bars, horizons)
+            actions = load_actions(session, ticker, end)
+            dividends, invalid, issues = label_inputs(bars, actions, ticker)
+            y = asset_labels(bars, horizons, dividends, invalid)
+            keep = (bars.index >= pd.Timestamp(start) if start is not None
+                    else np.ones(len(bars), dtype=bool))
             if start is not None:
-                keep = bars.index >= pd.Timestamp(start)
                 f, y = f[keep], y[keep]
+            if label_info is not None:
+                lo = bars.index[keep].min() if keep.any() else None
+                div_dates = actions.index[actions["action_type"] == "dividend"]
+                label_info[ticker] = {
+                    "dividend_rows": (int(((div_dates >= lo) & (div_dates <= bars.index[-1]))
+                                          .sum()) if lo is not None else 0),
+                    "splits": [(i, nan_periods(bars, horizons, keep, i, dividends))
+                               for i in issues],
+                }
             feats[ticker] = f
             labels[ticker] = y
     finally:

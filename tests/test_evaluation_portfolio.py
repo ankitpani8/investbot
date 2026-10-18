@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from investbot.evaluation.evaluate import evaluate, headline
-from investbot.evaluation.labels import forward_returns, label_columns
+from investbot.evaluation.labels import PRICE_STEMS, TR_STEMS, forward_returns, label_columns
 from investbot.evaluation.metrics import (
     daily_ic,
     held_periods,
@@ -60,7 +60,8 @@ def test_open_to_open_label_by_hand():
     assert y["FWD_RET_1"][0] == pytest.approx(11.5 / 11 - 1)
     assert y["FWD_CC_RET_2"][3] == pytest.approx(15.5 / 13.5 - 1)
     assert list(y) == label_columns((1, 2))
-    assert label_columns((5,)) == ["FWD_RET_5", "FWD_CC_RET_5", "FWD_OO_RET_5"]
+    assert label_columns((5,)) == ["FWD_RET_5", "FWD_CC_RET_5", "FWD_OO_RET_5",
+                                   "FWD_TR_RET_5", "FWD_TR_CC_RET_5", "FWD_TR_OO_RET_5"]
 
 
 def test_open_to_open_periods_tile_the_timeline():
@@ -240,11 +241,15 @@ def small_eval():
     tickers = [f"S{i:02d}" for i in range(20)]
     idx = pd.MultiIndex.from_product([dates, tickers], names=["date", "ticker"])
     n = len(idx)
-    labels = pd.DataFrame({c: rng.normal(0, 0.02, n) for c in label_columns((1, 5))}, index=idx)
+    labels = pd.DataFrame({c: rng.normal(0, 0.02, n)
+                           for c in label_columns((1, 5), PRICE_STEMS)}, index=idx)
+    # total return = price without dividends (task 200); same random stream as before
+    labels = labels.assign(**{c.replace(p, t, 1): labels[c] for p, t in zip(PRICE_STEMS, TR_STEMS)
+                              for c in label_columns((1, 5), (p,))})
     regime = rng.choice([0.0, 1.0, 2.0], n, p=[0.45, 0.45, 0.10])
     features = pd.DataFrame({
         "TECH_SCORE": rng.normal(size=n),
-        "ORACLE": labels["FWD_OO_RET_5"].to_numpy(),
+        "ORACLE": labels["FWD_TR_OO_RET_5"].to_numpy(),   # the primary held-portfolio label
         "REGIME": regime,
         "REGIME_CONFIDENCE": rng.uniform(size=n),
     }, index=idx)

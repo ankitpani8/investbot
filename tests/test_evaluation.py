@@ -14,7 +14,7 @@ import pytest
 from investbot.evaluation import stats
 from investbot.evaluation.baselines import BASELINE_COLUMNS, compute_baselines
 from investbot.evaluation.evaluate import evaluate, headline
-from investbot.evaluation.labels import forward_returns, label_columns
+from investbot.evaluation.labels import PRICE_STEMS, TR_STEMS, forward_returns, label_columns
 from investbot.evaluation.metrics import (
     bucket_returns,
     daily_ic,
@@ -332,10 +332,14 @@ def synthetic_eval():
     tickers = [f"S{i:02d}" for i in range(30)]
     idx = pd.MultiIndex.from_product([dates, tickers], names=["date", "ticker"])
     n = len(idx)
-    labels = pd.DataFrame({c: rng.normal(0, 0.02, n) for c in label_columns((1, 5))}, index=idx)
+    labels = pd.DataFrame({c: rng.normal(0, 0.02, n)
+                           for c in label_columns((1, 5), PRICE_STEMS)}, index=idx)
+    # total return = price without dividends (task 200); same random stream as before
+    labels = labels.assign(**{c.replace(p, t, 1): labels[c] for p, t in zip(PRICE_STEMS, TR_STEMS)
+                              for c in label_columns((1, 5), (p,))})
     features = pd.DataFrame({
         "TECH_SCORE": rng.normal(size=n),
-        "ORACLE": labels["FWD_RET_5"].to_numpy(),
+        "ORACLE": labels["FWD_TR_RET_5"].to_numpy(),      # the primary (total-return) label
         **{f"RANDOM_{k}": rng.normal(size=n) for k in range(N_RANDOM)},
         "REGIME": rng.integers(0, 2, n).astype(float),
         "REGIME_CONFIDENCE": rng.uniform(size=n),
@@ -378,7 +382,7 @@ def test_evaluate_rows_and_report(synthetic_eval):
     assert {"oos", "all", "regime:range", "regime:trend"} <= subsets
     assert any(s.startswith("block:") for s in subsets)
     assert any(s.startswith("year:") for s in subsets)
-    assert set(table["label"]) == {"open", "close"}
+    assert set(table["label"]) == {"open", "close", "price"}
     head = headline(table)
     assert head["ic_q"].notna().all() and (head["ic_q"] >= head["ic_p"] - 1e-12).all()
     # OOS rows only use test-block dates

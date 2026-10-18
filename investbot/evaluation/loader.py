@@ -1,8 +1,8 @@
 """
 The evaluation harness's only DB access: the stock universe (active stocks, or
 every past and present member of an index from ``index_membership``), dated
-membership, and one asset's daily OHLCV history at a time (8 GB RAM: never the
-whole universe).
+membership, one asset's daily OHLCV history and corporate actions at a time
+(8 GB RAM: never the whole universe), and a DB fingerprint for the report.
 """
 from __future__ import annotations
 
@@ -10,11 +10,12 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
+from investbot.data.corporate_actions import load_actions  # noqa: F401  (one asset at a time)
 from investbot.data.index_membership import membership_matrix
-from investbot.data.models import Asset, IndexMembership, PriceDaily
+from investbot.data.models import Asset, CorporateAction, IndexMembership, PriceDaily
 
 OHLCV: tuple[str, ...] = ("open", "high", "low", "close", "volume")
 
@@ -92,3 +93,14 @@ def load_daily_history(session: Session, ticker: str, end: date | None = None) -
     idx = pd.DatetimeIndex([pd.Timestamp(r[0]) for r in rows], name="date")
     data = np.array([r[1:] for r in rows], dtype=np.float64).reshape(len(rows), len(OHLCV))
     return pd.DataFrame(data, index=idx, columns=list(OHLCV))
+
+
+def db_fingerprint(session: Session) -> dict:
+    """What the run read: max ``price_daily.date``, ``price_daily`` and
+    ``corporate_actions`` row counts (two runs with equal values saw the same data
+    sizes; it is not a content hash)."""
+    max_date, n_prices = session.execute(
+        select(func.max(PriceDaily.date), func.count(PriceDaily.id))).one()
+    n_actions = session.execute(select(func.count(CorporateAction.id))).scalar_one()
+    return {"db_max_date": max_date, "db_price_rows": int(n_prices),
+            "db_action_rows": int(n_actions)}

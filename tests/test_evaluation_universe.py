@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from investbot.evaluation.evaluate import evaluate, headline
+from investbot.evaluation.labels import HORIZONS, PRICE_STEMS, TR_STEMS, label_columns
 
 START = "2023-01-02"
 N_BARS = 330
@@ -89,6 +90,9 @@ def synthetic_panel(n_dates: int = 700, n_names: int = 15, seed: int = 3):
         labels[f"FWD_RET_{h}"] = r1 * np.sqrt(h)
         labels[f"FWD_CC_RET_{h}"] = r1 * np.sqrt(h) + rng.normal(0, 0.002, shape)
         labels[f"FWD_OO_RET_{h}"] = r1 * np.sqrt(h) + rng.normal(0, 0.002, shape)
+    for stem in ("RET", "CC_RET", "OO_RET"):      # total return = price without dividends
+        for h in (1, 5):
+            labels[f"FWD_TR_{stem}_{h}"] = labels[f"FWD_{stem}_{h}"]
     idx = pd.MultiIndex.from_product([dates, tickers], names=["date", "ticker"])
     f = pd.DataFrame({k: v.reshape(-1) for k, v in feats.items()}, index=idx)
     y = pd.DataFrame({k: v.reshape(-1) for k, v in labels.items()}, index=idx)
@@ -125,7 +129,8 @@ def eval_fingerprint(table: pd.DataFrame) -> dict:
 
 def panel_fingerprint(feats: pd.DataFrame, labels: pd.DataFrame) -> dict:
     f = feats.to_numpy(dtype=np.float64)
-    y = labels.to_numpy(dtype=np.float64)
+    # the pre-task-200 (price) label columns; the TR columns are checked separately
+    y = labels[label_columns(HORIZONS, PRICE_STEMS)].to_numpy(dtype=np.float64)
     return {"shape": list(feats.shape),
             "feat_sum": float(np.nansum(np.where(np.isfinite(f), f, 0.0))),
             "label_sum": float(np.nansum(np.where(np.isfinite(y), y, 0.0)))}
@@ -133,13 +138,19 @@ def panel_fingerprint(feats: pd.DataFrame, labels: pd.DataFrame) -> dict:
 
 def test_active_evaluation_is_unchanged():
     f, y = synthetic_panel()
-    table, _ = evaluate(f, y, (1, 5))
+    # primary="price" is the pre-task-200 table exactly (no "price" comparison rows)
+    table, _ = evaluate(f, y, (1, 5), primary="price")
     got = eval_fingerprint(table)
     assert got["n_rows"] == GOLDEN_EVAL["n_rows"]
     assert got["sum"] == pytest.approx(GOLDEN_EVAL["sum"], rel=1e-10)
     for hz in (1, 5):
         assert got[("TECH_SCORE", hz)] == pytest.approx(GOLDEN_EVAL[("TECH_SCORE", hz)],
                                                        rel=1e-10)
+    # the default (total return) has TR == price here, so its headline is the same numbers
+    tr = eval_fingerprint(evaluate(f, y, (1, 5))[0])
+    for hz in (1, 5):
+        assert tr[("TECH_SCORE", hz)] == pytest.approx(GOLDEN_EVAL[("TECH_SCORE", hz)],
+                                                      rel=1e-10)
 
 
 def test_active_build_dataset_is_unchanged(tmp_path):
@@ -158,6 +169,11 @@ def test_active_build_dataset_is_unchanged(tmp_path):
     assert got["shape"] == GOLDEN_PANEL["shape"]
     assert got["feat_sum"] == pytest.approx(GOLDEN_PANEL["feat_sum"], rel=1e-10)
     assert got["label_sum"] == pytest.approx(GOLDEN_PANEL["label_sum"], rel=1e-10)
+    # no corporate_actions rows: every TR column equals its price column exactly
+    for p, t in zip(PRICE_STEMS, TR_STEMS):
+        for h in HORIZONS:
+            np.testing.assert_array_equal(labels[f"{t}_{h}"].to_numpy(),
+                                          labels[f"{p}_{h}"].to_numpy())
 
 
 # ──────────────────────────────────────────────────────────

@@ -314,7 +314,8 @@ def cmd_score():
 def cmd_evaluate():
     """Walk-forward forward-return evaluation of every technical signal and the baselines."""
     from investbot.evaluation.loader import has_index_membership
-    from investbot.evaluation.report import run_evaluation, universe_note
+    from investbot.evaluation.evaluate import headline
+    from investbot.evaluation.report import dividend_warning, run_evaluation, universe_note
 
     index_code = "NIFTY50"
     args = sys.argv[2:]
@@ -354,8 +355,10 @@ def cmd_evaluate():
                                                   universe=universe, index_code=index_code)
     finally:
         session.close()
-    n_prom = int(table["promising"].sum())
+    n_prom = int(headline(table)["promising"].sum())
     print(f"\n  {universe_note(info).replace('**', '')}\n")
+    if dividend_warning(info):
+        print(f"  {dividend_warning(info).replace('**', '')}\n")
     print(f"  Report:  {report}")
     print(f"  Metrics: {csv}")
     print(f"  Promising signal × horizon tests: {n_prom}\n")

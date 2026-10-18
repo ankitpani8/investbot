@@ -14,6 +14,12 @@ same walk-forward splits for the "Universe effect" table. Features are
 computed once: the active panel is the index panel restricted to active
 tickers, without ``IN_UNIVERSE`` (identical to ``build_dataset(universe="active")``).
 
+Every headline metric uses the total-return labels (``evaluate.PRIMARY_RETURN``);
+the "Dividend effect" table sets them next to the price-only labels. The Setup
+records dividend coverage, unadjusted splits (their label periods are NaN) and
+what is needed to compare two runs: ``SCORER_VERSION``, the git commit and a
+DB fingerprint (``loader.db_fingerprint``).
+
 An existing report is never overwritten: a second run on the same day writes
 ``eval_<YYYYMMDD>_b.md`` (then ``_c``, ...).
 
@@ -24,6 +30,7 @@ from __future__ import annotations
 import logging
 import math
 import resource
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -35,6 +42,8 @@ import pandas as pd
 from investbot.data.index_membership import HISTORY_START
 from investbot.evaluation.baselines import BASELINE_COLUMNS
 from investbot.evaluation.evaluate import (
+    COMPARISON_RETURN,
+    PRIMARY_RETURN,
     PROMISING_Q,
     PROMISING_SIGN_SHARE,
     evaluate,
@@ -53,6 +62,7 @@ from investbot.evaluation.panel import (
     SCORE_COLUMNS,
     UNIVERSE_COLUMN,
     VARIANT_TIMING_KEY,
+    SPLIT_COUNT_STEM,
     build_dataset,
     point_in_time_membership,
     signal_columns,
@@ -112,6 +122,19 @@ class RunInfo:
     #: Columns ``evaluate`` was given (``signal_columns``); VAR_* among them.
     n_signal_columns: int = 0
     n_variant_columns: int = 0
+    #: Return of the headline labels (``evaluate.PRIMARY_RETURN``).
+    primary_return: str = PRIMARY_RETURN
+    #: Dividend coverage: names with >= 1 dividend row (ex-date in the panel window), rows.
+    n_dividend_names: int = 0
+    n_dividend_rows: int = 0
+    #: Unadjusted splits: (ticker, ex_date, factor, label periods NaN'd on SPLIT_COUNT_STEM).
+    split_issues: list[tuple[str, date, float, int]] = field(default_factory=list)
+    #: Reproducibility: scorer version, ``git rev-parse --short HEAD``, DB fingerprint.
+    scorer_version: str = ""
+    git_commit: str = "unknown"
+    db_max_date: date | None = None
+    db_price_rows: int = 0
+    db_action_rows: int = 0
 
 
 def universe_note(info: RunInfo) -> str:
@@ -135,6 +158,33 @@ def universe_note(info: RunInfo) -> str:
         text += (f" {info.fallback_oos_dates} OOS dates fall before {info.complete_from} and use "
                  "today's active stocks.")
     return text
+
+
+def dividend_warning(info: RunInfo) -> str:
+    """A prominent warning when no dividend reached the labels ("" otherwise)."""
+    if info.primary_return != "tr" or info.n_dividend_names > 0:
+        return ""
+    why = ("`corporate_actions` is empty" if info.db_action_rows == 0
+           else "`corporate_actions` has no dividend rows in the evaluation window")
+    return (f"**Warning: total return equals price in this run.** {why}, so every "
+            "total-return label equals its price-only label and the \"Dividend effect\" "
+            "table shows no difference. Run `python main.py ingest` (it fills "
+            "`corporate_actions` from the daily download) and re-run `python main.py evaluate`.")
+
+
+def git_commit(cwd: Path | None = None) -> str:
+    """``git rev-parse --short HEAD`` of the repo (or ``cwd``), ``"unknown"`` if that fails."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=cwd or REPO_ROOT,
+                             capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    head = out.stdout.strip()
+    return head if out.returncode == 0 and head else "unknown"
+
+
+def _label_name(info: RunInfo) -> str:
+    return "total-return" if info.primary_return == "tr" else "price"
 
 
 def _share(x: float) -> str:
@@ -394,6 +444,101 @@ _EFFECT_COLS = [
 ]
 
 
+def dividend_effect(table: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """Headline mean IC and held-portfolio CAGR (net, universe) under the primary return
+    (``_tr``) and the price-only comparison rows (``_price``)."""
+    cols = ["signal", "horizon", "ic_mean", "icir", "ic_q", "promising", "held_cagr_net",
+            "held_cagr_universe"]
+    a = headline(table)[cols]
+    b = headline(table, COMPARISON_RETURN)[cols]
+    m = a.merge(b, on=["signal", "horizon"], how="inner", suffixes=("_tr", "_price"))
+    m["d_ic"] = m["ic_mean_tr"] - m["ic_mean_price"]
+    m["d_held"] = m["held_cagr_net_tr"] - m["held_cagr_net_price"]
+    return _order(m, names)
+
+
+_DIVIDEND_COLS = [
+    ("signal", "signal", _s), ("h", "horizon", _int),
+    ("mean IC price", "ic_mean_price", _f), ("mean IC TR", "ic_mean_tr", _f),
+    ("Δ IC", "d_ic", _f),
+    ("held CAGR net price", "held_cagr_net_price", _pct),
+    ("held CAGR net TR", "held_cagr_net_tr", _pct), ("Δ held", "d_held", _pct),
+    ("CAGR univ. price", "held_cagr_universe_price", _pct),
+    ("CAGR univ. TR", "held_cagr_universe_tr", _pct),
+]
+
+
+def verdict_changes(table: pd.DataFrame) -> pd.DataFrame:
+    """Tests whose BH significance (q < PROMISING_Q) or promising flag differs between the
+    primary (TR) family and the price-only family."""
+    m = dividend_effect(table, sorted(set(headline(table)["signal"])))
+    sig_t = m["ic_q_tr"] < PROMISING_Q
+    sig_p = m["ic_q_price"] < PROMISING_Q
+    diff = (sig_t != sig_p) | (m["promising_tr"].astype(bool) != m["promising_price"].astype(bool))
+    return m[diff].sort_values(["signal", "horizon"])
+
+
+def dividend_section(table: pd.DataFrame, info: RunInfo, names: list[str]) -> str:
+    out: list[str] = []
+    w = out.append
+    w("## Dividend effect: total return vs price only (OOS)\n")
+    if not (table["label"] == COMPARISON_RETURN).any():
+        w(f"_No price-only comparison rows (primary return is {info.primary_return!r})._\n")
+        return "\n".join(out) + "\n"
+    warn = dividend_warning(info)
+    if warn:
+        w(f"> {warn}\n")
+    w("Same signals, walk-forward splits, buckets and costs; only the label changes. "
+      "*TR* = `FWD_TR_RET_h` for the IC and `FWD_TR_OO_RET_h` for the held portfolio "
+      "(the headline everywhere else in this report); *price* = `FWD_RET_h` / `FWD_OO_RET_h`, "
+      "the labels of the reports before task 200. Held CAGR net: the open-to-open "
+      "top-quintile portfolio net of costs; CAGR univ.: the equal-weight universe over the "
+      "same periods. Dividends are not reinvested within a period and not taxed.\n")
+    w(_table(dividend_effect(table, names), _DIVIDEND_COLS))
+    flips = verdict_changes(table)
+    if flips.empty:
+        w("No test changes BH significance or promising flag between price and TR "
+          f"(each its own Benjamini–Hochberg family of {len(headline(table))} tests).\n")
+    else:
+        w(f"Tests whose BH significance (q < {PROMISING_Q:.2f}) or promising flag differs "
+          "between price and TR (each its own BH family):\n")
+        w(_table(flips, [("signal", "signal", _s), ("h", "horizon", _int),
+                         ("IC TR", "ic_mean_tr", _f), ("q TR", "ic_q_tr", lambda x: _f(x, "{:.3f}")),
+                         ("promising TR", "promising_tr", _f),
+                         ("IC price", "ic_mean_price", _f),
+                         ("q price", "ic_q_price", lambda x: _f(x, "{:.3f}")),
+                         ("promising price", "promising_price", _f)]))
+    return "\n".join(out) + "\n"
+
+
+def _setup_label_lines(info: RunInfo) -> list[str]:
+    """Dividend coverage, split issues and the reproducibility line."""
+    lines = []
+    warn = dividend_warning(info)
+    lines.append(f"- Dividend coverage: {info.n_dividend_names} of {info.n_assets} names have at "
+                 f"least one dividend row with an ex-date in the panel window, "
+                 f"{info.n_dividend_rows} dividend rows in total"
+                 + (f". {warn}" if warn else "."))
+    if info.split_issues:
+        total = sum(n for *_, n in info.split_issues)
+        lines.append(
+            f"- Unadjusted splits (`quality.detect_unadjusted_splits`, history before the "
+            f"ex-date on the old share scale): "
+            + ", ".join(f"{t} {d} (×{f:g}, {n} periods)" for t, d, f, n in info.split_issues)
+            + f". Every label whose period spans the ex-date boundary is NaN: {total} "
+            f"`{SPLIT_COUNT_STEM}_h` periods over all h (the other label columns are NaN on "
+            "the matching periods). Re-adjusting that history is a human decision "
+            "(`python main.py dq`).")
+    else:
+        lines.append("- Unadjusted splits: none detected (no label period NaN'd).")
+    fp_date = f"{info.db_max_date}" if info.db_max_date is not None else "–"
+    lines.append(f"- Reproducibility: `SCORER_VERSION` {info.scorer_version or '–'}, git commit "
+                 f"`{info.git_commit}`, DB fingerprint: max `price_daily.date` {fp_date}, "
+                 f"{info.db_price_rows} `price_daily` rows, {info.db_action_rows} "
+                 "`corporate_actions` rows.")
+    return lines
+
+
 def _setup_universe_lines(info: RunInfo) -> list[str]:
     span = (f"Bars {info.first_date:%Y-%m-%d} → {info.last_date:%Y-%m-%d}"
             + (f"; panel from {info.start}" if info.start else ""))
@@ -438,6 +583,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
 
     w(f"# Evaluation report {report_date:%Y-%m-%d}\n")
     w(f"> {universe_note(info)}\n")
+    if dividend_warning(info):
+        w(f"> {dividend_warning(info)}\n")
     w("Generated by `python main.py evaluate` (`investbot/evaluation/`). Nothing is fitted: "
       "every signal is evaluated with its designed polarity on walk-forward test blocks only.\n")
 
@@ -450,10 +597,25 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
           f"{oos[0][0]:%Y-%m-%d} → {oos[-1][-1]:%Y-%m-%d}, {sum(len(t) for t in oos)} dates. "
           f"Expanding train window (≥ {MIN_TRAIN_BARS} bars from the first date with "
           f"TECH_SCORE on ≥ {MIN_NAMES} names), embargo of {max(horizons)} bars before each block.")
-    w(f"- Labels: `FWD_RET_h = close[t+h] / open[t+1] − 1` (signal known after t's close, "
-      f"entry at the next open), h ∈ {{{', '.join(map(str, horizons))}}}. "
-      "Close-to-close shown for comparison only. The held portfolio uses "
-      "`FWD_OO_RET_h = open[t+1+h] / open[t+1] − 1` (open-to-open, so periods tile the timeline).")
+    if info.primary_return == "tr":
+        w(f"- Labels (total return, dividends credited on their ex-date bars, not reinvested "
+          f"within a period, untaxed): `FWD_TR_RET_h = (close[t+h] + D[t+2..t+h]) / open[t+1] − 1` "
+          f"(signal known after t's close, entry at the next open, so a dividend whose ex-date "
+          f"is the entry bar is not earned), h ∈ {{{', '.join(map(str, horizons))}}}. "
+          "Close-to-close `FWD_TR_CC_RET_h = (close[t+h] + D[t+1..t+h]) / close[t] − 1` for "
+          "comparison only. The held portfolio uses `FWD_TR_OO_RET_h = (open[t+1+h] + "
+          "D[t+2..t+1+h]) / open[t+1] − 1` (open-to-open, so periods tile the timeline; an exit "
+          "at an ex-date's open earns that dividend). D[a..b] = dividends per share on stored "
+          "bars a..b. The price-only labels `FWD_RET_h = close[t+h] / open[t+1] − 1` and "
+          "`FWD_OO_RET_h` are in the \"Dividend effect\" table only.")
+    else:
+        w(f"- Labels: `FWD_RET_h = close[t+h] / open[t+1] − 1` (signal known after t's close, "
+          f"entry at the next open), h ∈ {{{', '.join(map(str, horizons))}}}. "
+          "Close-to-close shown for comparison only. The held portfolio uses "
+          "`FWD_OO_RET_h = open[t+1+h] / open[t+1] − 1` (open-to-open, so periods tile the "
+          "timeline).")
+    for line in _setup_label_lines(info):
+        w(line)
     w("- IC: daily cross-sectional Spearman; ICIR = mean / sd of daily IC (not annualised); "
       "t-stats use Newey-West standard errors with lag h − 1.")
     w(f"- Multiple testing: Benjamini–Hochberg over all {len(head)} signal × horizon tests. "
@@ -482,7 +644,7 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
         w(f"- {line}")
     w("")
 
-    w(f"## Top {TOP_N} signals by |ICIR| (OOS, next-open labels)\n")
+    w(f"## Top {TOP_N} signals by |ICIR| (OOS, next-open {_label_name(info)} labels)\n")
     for h in horizons:
         hh = head[head["horizon"] == h]
         top = hh.reindex(hh["icir"].abs().sort_values(ascending=False).index).head(TOP_N)
@@ -525,6 +687,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       "the same periods. The OOS blocks are contiguous, so the curve spans the whole OOS window. "
       "No taxes.\n")
     w(_table(_order(head, portfolio_names), _HELD_COLS))
+
+    w(dividend_section(table, info, ["TECH_SCORE", *families, *BASELINE_COLUMNS]))
 
     w(variants_section(head, horizons, info))
 
@@ -607,6 +771,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     w("- Five years of daily history leave about three years out of sample after warmup "
       "(EMA_200, regime window) and the first training year; ~50 names per date.")
     w("- A missing session (purged bar) is skipped, not filled: t+1 is the next *stored* bar.")
+    w("- Total return credits gross cash dividends; dividend tax (slab rate) is not modelled, "
+      "and neither is STCG/LTCG on the trades.")
     w("- A signal significant only with its sign inverted is a finding about polarity, "
       "not something to switch on: polarity decisions go to Ankit with this evidence.")
     return "\n".join(out) + "\n"
@@ -678,6 +844,17 @@ def _coverage_info(session, index_code: str, start, end, features: pd.DataFrame,
     }
 
 
+def label_summary(label_info: dict[str, dict], tickers: set[str]) -> dict:
+    """RunInfo fields from ``build_dataset``'s ``label_info``, over the headline ``tickers``."""
+    rows = {t: v for t, v in label_info.items() if t in tickers}
+    return {
+        "n_dividend_names": sum(v["dividend_rows"] > 0 for v in rows.values()),
+        "n_dividend_rows": sum(v["dividend_rows"] for v in rows.values()),
+        "split_issues": sorted((t, i.ex_date, i.factor, n) for t, v in rows.items()
+                               for i, n in v["splits"]),
+    }
+
+
 def run_evaluation(
     horizons=HORIZONS,
     start: date | None = None,
@@ -698,8 +875,12 @@ def run_evaluation(
     from investbot.data.index_membership import COMPLETE_FROM
     from investbot.evaluation.loader import active_tickers
 
+    from investbot.evaluation.loader import db_fingerprint
+    from investbot.scoring.technical.scorer import SCORER_VERSION
+
     t0 = time.monotonic()
     timings: dict[str, float] = {}
+    label_info: dict[str, dict] = {}
     horizons = tuple(sorted(int(h) for h in horizons))
     own = session is None
     if own:
@@ -708,7 +889,8 @@ def run_evaluation(
     try:
         features, labels = build_dataset(start=start, end=end, horizons=horizons, session=session,
                                          universe=universe, index_code=index_code,
-                                         variants=True, timings=timings)
+                                         variants=True, timings=timings,
+                                         label_info=label_info)
         if features.empty:
             raise RuntimeError("no assets with enough daily bars to evaluate")
         t_eval = time.monotonic()
@@ -725,7 +907,8 @@ def run_evaluation(
             fa, la = active_subset(features, labels, active)
             if missing:      # active stocks outside the index universe (none for NIFTY50)
                 fm, lm = build_dataset(missing, start, end, horizons=horizons, session=session,
-                                       universe="active", variants=True, timings=timings)
+                                       universe="active", variants=True, timings=timings,
+                                       label_info=label_info)
                 fa, la = pd.concat([fa, fm]).sort_index(), pd.concat([la, lm]).sort_index()
             t_eval = time.monotonic()
             compare, _ = evaluate(fa, la, horizons, splits=splits)
@@ -734,6 +917,7 @@ def run_evaluation(
                                    oos_dates(splits), active, COMPLETE_FROM)
             extra["n_active"] = fa.index.get_level_values("ticker").nunique()
             del fa, la
+        extra.update(db_fingerprint(session))
     finally:
         if own:
             session.close()
@@ -741,7 +925,9 @@ def run_evaluation(
     sig_cols = signal_columns(features)
     extra.update(variants_s=timings.get(VARIANT_TIMING_KEY, 0.0), evaluate_s=eval_s,
                  n_signal_columns=len(sig_cols),
-                 n_variant_columns=sum(c in VARIANT_COLUMNS for c in sig_cols))
+                 n_variant_columns=sum(c in VARIANT_COLUMNS for c in sig_cols),
+                 **label_summary(label_info, set(features.index.get_level_values("ticker"))),
+                 scorer_version=SCORER_VERSION, git_commit=git_commit())
     info = RunInfo(n_assets=features.index.get_level_values("ticker").nunique(),
                    first_date=dates.min(), last_date=dates.max(), horizons=horizons,
                    start=start, elapsed_s=time.monotonic() - t0, universe=universe,
