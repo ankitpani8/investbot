@@ -7,6 +7,9 @@ evaluates it and writes
     docs/reports/eval_<YYYYMMDD>.md        the report (committed)
     tmp_output/eval_metrics_<YYYYMMDD>.csv every metrics row (git-ignored)
 
+An existing report is never overwritten: a second run on the same day writes
+``eval_<YYYYMMDD>_b.md`` (then ``_c``, ...).
+
 ``render_report`` is pure: it only formats a metrics table.
 """
 from __future__ import annotations
@@ -31,6 +34,7 @@ from investbot.evaluation.evaluate import (
 from investbot.evaluation.labels import HORIZONS
 from investbot.evaluation.metrics import (
     MIN_NAMES,
+    POOLED_MIN_NAMES,
     REFERENCE_TRADE_VALUE,
     ROUND_TRIP_COST,
     SLIPPAGE_PER_SIDE,
@@ -122,10 +126,24 @@ _COST_COLS = [
     ("gross /yr", "lo_gross_ann", _pct), ("net /yr", "lo_net_ann", _pct),
     ("universe /yr", "lo_universe_ann", _pct), ("net − universe /yr", "lo_excess_net_ann", _pct),
 ]
+_HELD_COLS = [
+    ("signal", "signal", _s), ("h", "horizon", _int), ("periods", "held_n_periods", _int),
+    ("turnover", "top_turnover", lambda x: _f(x, "{:.2f}")),
+    ("CAGR gross", "held_cagr_gross", _pct), ("CAGR net", "held_cagr_net", _pct),
+    ("CAGR universe", "held_cagr_universe", _pct), ("vol /yr", "held_vol_ann_net", _pct),
+    ("max DD", "held_max_drawdown_net", _pct),
+    ("IR vs universe", "held_info_ratio_net", lambda x: _f(x, "{:+.2f}")),
+]
 _SPLIT_COLS = [
     ("signal", "signal", _s), ("h", "horizon", _int), ("subset", "subset", _s),
     ("days", "n_days", _int), ("mean IC", "ic_mean", _f), ("ICIR", "icir", _f),
     ("NW t", "ic_t_nw", lambda x: _f(x, "{:+.2f}")), ("top−bottom", "spread_mean", _pct),
+]
+
+_REGIME_COLS = [
+    *_SPLIT_COLS,
+    ("pooled IC", "pooled_ic", _f), ("pooled NW t", "pooled_t_nw", lambda x: _f(x, "{:+.2f}")),
+    ("pooled dates", "pooled_n_dates", _int), ("pooled obs", "pooled_n_obs", _int),
 ]
 
 
@@ -200,7 +218,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
           f"TECH_SCORE on ≥ {MIN_NAMES} names), embargo of {max(horizons)} bars before each block.")
     w(f"- Labels: `FWD_RET_h = close[t+h] / open[t+1] − 1` (signal known after t's close, "
       f"entry at the next open), h ∈ {{{', '.join(map(str, horizons))}}}. "
-      "Close-to-close shown for comparison only.")
+      "Close-to-close shown for comparison only. The held portfolio uses "
+      "`FWD_OO_RET_h = open[t+1+h] / open[t+1] − 1` (open-to-open, so periods tile the timeline).")
     w("- IC: daily cross-sectional Spearman; ICIR = mean / sd of daily IC (not annualised); "
       "t-stats use Newey-West standard errors with lag h − 1.")
     w(f"- Multiple testing: Benjamini–Hochberg over all {len(head)} signal × horizon tests. "
@@ -237,7 +256,7 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       "(Q5/Q1 for continuous signals; discrete signals fill fewer buckets).\n")
     w(_table(_order(head, ["TECH_SCORE", *families, *BASELINE_COLUMNS]), _Q_COLS))
 
-    w("## Cost reality check: top-quintile long-only (OOS)\n")
+    w("## Cost reality check: top-quintile long-only, open→close per period (OOS)\n")
     w(f"Equal weight, rebalanced every h bars; net = gross − turnover × {ROUND_TRIP_COST:.3%}. "
       "Universe = equal weight over all names in the same periods. Simple annualisation "
       "(mean period return × 252 / h); not compounded, no taxes. Each period runs from open[t+1] "
@@ -245,14 +264,31 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       "returns at short horizons are mostly the (negative) open-to-close drift. Compare "
       "against the universe column, not against zero.\n")
     promising = head[head["promising"]]["signal"].unique().tolist()
-    w(_table(_order(head, ["TECH_SCORE", *families, *BASELINE_COLUMNS,
-                           *[p for p in promising if p not in SCORE_COLUMNS]]), _COST_COLS))
+    portfolio_names = ["TECH_SCORE", *families, *BASELINE_COLUMNS,
+                       *[p for p in promising if p not in SCORE_COLUMNS
+                         and p not in BASELINE_COLUMNS]]
+    w(_table(_order(head, portfolio_names), _COST_COLS))
+
+    w("## Held portfolio (open-to-open, compounded)\n")
+    w("The same top-quintile equal-weight portfolio, rebalanced every h bars, but held "
+      "continuously: each period runs open[t+1] → open[t+1+h], so consecutive periods tile the "
+      f"OOS timeline and the overnight gap is included. Net = gross − turnover × "
+      f"{ROUND_TRIP_COST:.3%} per period, compounded. CAGR over the invested periods "
+      "(n × h / 252 years); vol = sd of net period returns × √(252 / h); max DD = worst "
+      "peak-to-trough of the compounded net curve; IR = mean / sd of (net − universe) period "
+      "returns × √(252 / h). No risk-free rate: the benchmark is the equal-weight universe over "
+      "the same periods. The OOS blocks are contiguous, so the curve spans the whole OOS window. "
+      "No taxes.\n")
+    w(_table(_order(head, portfolio_names), _HELD_COLS))
 
     w("## By regime (OOS)\n")
-    w(f"Cross-section restricted to names in that regime on that date (≥ {MIN_NAMES} names, "
-      "so chaotic is mostly empty).\n")
+    w(f"Cross-section restricted to names in that regime on that date. Daily IC and quintiles "
+      f"need ≥ {MIN_NAMES} names on a date, so chaotic is mostly empty. The **pooled IC** uses "
+      f"every date with ≥ {POOLED_MIN_NAMES} names: per-date ranks scaled to [−0.5, 0.5], "
+      "pooled over all (date, name) rows (larger cross-sections weigh more); its t-stat is "
+      "Newey-West (lag h − 1) on the per-date sums.\n")
     reg = table[(table["label"] == "open") & table["subset"].str.startswith("regime:")]
-    w(_table(_order(reg, ["TECH_SCORE", *families, *BASELINE_COLUMNS]), _SPLIT_COLS))
+    w(_table(_order(reg, ["TECH_SCORE", *families, *BASELINE_COLUMNS]), _REGIME_COLS))
 
     w("## By year (OOS)\n")
     yr = table[(table["label"] == "open") & table["subset"].str.startswith("year:")]
@@ -303,6 +339,16 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     return "\n".join(out) + "\n"
 
 
+def report_paths(report_dir: Path, csv_dir: Path, report_date: date) -> tuple[Path, Path]:
+    """``eval_<YYYYMMDD>.md`` and its CSV; ``_b``, ``_c``, ... if that report already exists."""
+    stem = f"{report_date:%Y%m%d}"
+    for suffix in ["", *(f"_{chr(c)}" for c in range(ord("b"), ord("z") + 1))]:
+        report = report_dir / f"eval_{stem}{suffix}.md"
+        if not report.exists():
+            return report, csv_dir / f"eval_metrics_{stem}{suffix}.csv"
+    raise FileExistsError(f"too many reports for {stem} in {report_dir}")
+
+
 def run_evaluation(
     horizons=HORIZONS,
     start: date | None = None,
@@ -329,8 +375,7 @@ def run_evaluation(
     report_date = report_date or date.today()
     report_dir.mkdir(parents=True, exist_ok=True)
     csv_dir.mkdir(parents=True, exist_ok=True)
-    report = report_dir / f"eval_{report_date:%Y%m%d}.md"
-    csv = csv_dir / f"eval_metrics_{report_date:%Y%m%d}.csv"
+    report, csv = report_paths(report_dir, csv_dir, report_date)
     table.to_csv(csv, index=False)
     report.write_text(render_report(table, splits, info, report_date), encoding="utf-8")
     return report, csv, table
