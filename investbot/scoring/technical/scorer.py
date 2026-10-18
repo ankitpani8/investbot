@@ -84,7 +84,7 @@ MIN_BARS: int = 30
 #: A last bar more than this many business days before the reference time is stale.
 STALE_AFTER_BUSINESS_DAYS: int = 3
 #: Part of the cache key. Bump whenever a compute module's output changes.
-SCORER_VERSION: str = "1"
+SCORER_VERSION: str = "2"  # 2: REGIME_CONFIDENCE is EMA-smoothed (task 110)
 
 OHLCV: tuple[str, ...] = ("open", "high", "low", "close", "volume")
 _IST = ZoneInfo(TIMEZONE)

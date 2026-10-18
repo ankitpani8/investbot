@@ -21,7 +21,7 @@ Pipeline
        family's inputs are in the frame (e.g. MTF on daily-only scoring).
     3. Weights. Family weights come from ``investbot/config/scoring_weights.py``:
        ``w = c * FAMILY_WEIGHTS[REGIME] + (1 - c) * FAMILY_WEIGHTS["neutral"]``
-       with c = REGIME_CONFIDENCE (neutral weights while the regime is NaN),
+       with c = REGIME_CONFIDENCE, the EMA-smoothed one (neutral weights while the regime is NaN),
        renormalised over the families whose inputs are in the frame.
     4. Score. ``TECH_SCORE = multiplier * sum_f w_f * TECH_SCORE_<f>``, where
        the multiplier is the same blend of ``REGIME_SCORE_MULTIPLIER`` (<= 1).
@@ -321,6 +321,7 @@ COLUMN_FAMILIES: dict[str, str | None] = {
     "REGIME_SCORE_TREND": None,
     "REGIME_SCORE_CHAOS": None,
     "REGIME": None,
+    "REGIME_CONFIDENCE_RAW": None,   # unsmoothed gap; weights use the smoothed one
     "REGIME_CONFIDENCE": None,
     # multi_timeframe.py
     "MTF_TREND_ALIGN": MTF,

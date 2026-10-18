@@ -208,6 +208,21 @@ def test_mtf_regime_is_previous_session(m15, daily, full):
     np.testing.assert_array_equal(full["MTF_REGIME_1D"].to_numpy(), expected)
 
 
+def test_mtf_regime_confidence_is_smoothed_previous_session():
+    """MTF_REGIME_CONFIDENCE_1D is the EMA-smoothed daily confidence, not the raw gap."""
+    from investbot.scoring.technical.regime import compute_regime
+    days = pd.bdate_range("2024-01-01", periods=300)   # past the 250-bar VOL_LONG warmup
+    daily, m15 = _daily(days), _intraday(days[-20:])
+    out = mtf_alignment(m15, daily, regime_kwargs=REGIME_KW)
+    reg = compute_regime(daily, **REGIME_KW)
+    day_pos = days.get_indexer(out.index.normalize())
+    got = out["MTF_REGIME_CONFIDENCE_1D"].to_numpy()
+    np.testing.assert_array_equal(got, reg["REGIME_CONFIDENCE"][day_pos - 1])
+    raw = reg["REGIME_CONFIDENCE_RAW"][day_pos - 1]
+    assert np.isfinite(got).all() and np.isfinite(raw).all()
+    assert not np.allclose(got, raw)
+
+
 def test_mtf_align_is_weighted_mean_of_components(full):
     for kind in ("TREND", "MOMENTUM"):
         parts = full[[f"MTF_{kind}_{tf}" for tf in ("15M", "1H", "1D")]]

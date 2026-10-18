@@ -18,8 +18,12 @@ Output columns (all float64, NaN during warmup or when the window has a NaN)
                      soft evidence in [0, 1] for each regime (see below).
     REGIME           0 = mean-reverting/range, 1 = trending,
                      2 = chaotic/high-volatility. Argmax of the three scores.
-    REGIME_CONFIDENCE
+    REGIME_CONFIDENCE_RAW
                      top score minus runner-up score, in [0, 1].
+    REGIME_CONFIDENCE
+                     causal EMA (span ``CONFIDENCE_EMA_SPAN``) of
+                     REGIME_CONFIDENCE_RAW, in [0, 1]. This is the value the
+                     confluence weights and the allocator blend read.
 
 Hurst: why DFA and not R/S
     Classical rescaled-range (R/S) analysis is biased upwards on short
@@ -79,10 +83,21 @@ Regime label and confidence
     REGIME_SCORE_TREND = sigmoid(trend_z), REGIME_SCORE_RANGE = 1 - trend,
     REGIME_SCORE_CHAOS = sigmoid(chaos_z).
     H and LYAP are taken at ``regime_window``. REGIME is the argmax (ties go
-    to the lower code) and REGIME_CONFIDENCE is the gap between the top two
-    scores. Every score is a smooth function of the inputs and the gap of
-    the top two is continuous, so the confidence is 0 exactly where the
+    to the lower code) and REGIME_CONFIDENCE_RAW is the gap between the top
+    two scores. Every score is a smooth function of the inputs and the gap of
+    the top two is continuous, so the raw confidence is 0 exactly where the
     label flips and grows smoothly away from it. It is not a step function.
+
+    REGIME_CONFIDENCE smooths the raw gap over time with an EMA
+    (``CONFIDENCE_EMA_SPAN = 5`` bars, alpha = 2 / (span + 1), recursive form
+    y[t] = alpha * x[t] + (1 - alpha) * y[t-1], seeded with the first valid
+    raw value). A label that flips back and forth every few bars keeps the
+    raw gap jumping between ~0 and its peak; the EMA damps that churn before
+    it reaches the Black-Litterman <-> risk-parity blend, where each swing
+    would mean rebalancing (tax and fees). It is NaN wherever the raw value
+    is NaN, and after a NaN in the middle of the series it restarts from the
+    next valid raw value instead of carrying state from before the gap.
+    The label itself (REGIME) is not smoothed.
 
     ADX_14 is computed here from high/low/close with TA-Lib, so the module
     has no dependency on the indicator layer having run. It is not emitted,
@@ -93,7 +108,8 @@ No lookahead
     only. Hurst, Lyapunov and realised volatility are fixed-length trailing
     windows, so they are also invariant to dropping old history. ADX is
     Wilder-smoothed (recursive), so the regime scores depend weakly on where
-    the series starts, like ADX itself. Tested in ``tests/test_regime.py``.
+    the series starts, like ADX itself; the REGIME_CONFIDENCE EMA is
+    recursive in the same way. Tested in ``tests/test_regime.py``.
 
 Warmup
     HURST_<W> and LYAP_<W> need W + 1 closes (first value at row W),
@@ -161,6 +177,10 @@ LYAP_CHAOS: float = 0.30
 LYAP_SCALE: float = 0.02
 VOL_WEIGHT: float = 0.75
 LYAP_WEIGHT: float = 0.25
+
+#: Span of the causal EMA that turns REGIME_CONFIDENCE_RAW into
+#: REGIME_CONFIDENCE (decided 2026-10-18, see docs/DECISIONS_PENDING.md).
+CONFIDENCE_EMA_SPAN: int = 5
 
 REGIME_RANGE: int = 0
 REGIME_TREND: int = 1
@@ -314,7 +334,7 @@ def _sigmoid(z: np.ndarray) -> np.ndarray:
 def regime_scores(
     hurst: np.ndarray, adx: np.ndarray, vol_ratio: np.ndarray, lyap: np.ndarray
 ) -> dict[str, np.ndarray]:
-    """Soft evidence, label and confidence from the four inputs (all same length)."""
+    """Soft evidence, label and raw (unsmoothed) confidence from the four inputs (all same length)."""
     trend_z = (HURST_WEIGHT * (hurst - HURST_NEUTRAL) / HURST_SCALE
                + ADX_WEIGHT * (adx - ADX_NEUTRAL) / ADX_SCALE)
     chaos_z = (VOL_WEIGHT * (vol_ratio - VOL_RATIO_CHAOS) / VOL_RATIO_SCALE
@@ -337,8 +357,30 @@ def regime_scores(
         "REGIME_SCORE_TREND": trend,
         "REGIME_SCORE_CHAOS": chaos,
         "REGIME": label,
-        "REGIME_CONFIDENCE": conf,
+        "REGIME_CONFIDENCE_RAW": conf,
     }
+
+
+def smooth_confidence(raw: np.ndarray, span: int = CONFIDENCE_EMA_SPAN) -> np.ndarray:
+    """
+    Causal EMA of ``raw`` (pandas ``ewm(span, adjust=False)``), restarted after every NaN.
+
+    NaN wherever ``raw`` is NaN. Each run of finite values starts again from
+    its own first value, so nothing from before a gap leaks past it.
+    """
+    if span < 1:
+        raise ValueError(f"span must be >= 1, got {span}")
+    x = np.asarray(raw, dtype=np.float64)
+    alpha = 2.0 / (span + 1.0)
+    out = np.full(len(x), np.nan)
+    prev = np.nan
+    for i, v in enumerate(x):
+        if not np.isfinite(v):
+            prev = np.nan
+            continue
+        prev = v if np.isnan(prev) else alpha * v + (1.0 - alpha) * prev
+        out[i] = prev
+    return out
 
 
 def list_regime_columns(
@@ -351,7 +393,7 @@ def list_regime_columns(
         + [f"LYAP_{w}" for w in lyap_windows]
         + [f"REALVOL_{VOL_SHORT}", f"REALVOL_{VOL_LONG}", "VOL_RATIO"]
         + ["REGIME_SCORE_RANGE", "REGIME_SCORE_TREND", "REGIME_SCORE_CHAOS",
-           "REGIME", "REGIME_CONFIDENCE"]
+           "REGIME", "REGIME_CONFIDENCE_RAW", "REGIME_CONFIDENCE"]
     )
 
 
@@ -364,6 +406,7 @@ def compute_regime(
     lag: int = LAG,
     theiler: int = THEILER,
     horizon: int = HORIZON,
+    confidence_ema_span: int = CONFIDENCE_EMA_SPAN,
 ) -> dict[str, np.ndarray]:
     """
     Rolling Hurst, Lyapunov, realised volatility and the regime label.
@@ -378,6 +421,8 @@ def compute_regime(
         Window whose HURST and LYAP feed the label. Must be in both tuples.
     embed_dim, lag, theiler, horizon : int
         Rosenstein parameters, see the module docstring.
+    confidence_ema_span : int
+        EMA span that smooths REGIME_CONFIDENCE_RAW into REGIME_CONFIDENCE.
 
     Returns
     -------
@@ -414,6 +459,7 @@ def compute_regime(
     out.update(regime_scores(
         out[f"HURST_{regime_window}"], adx, vol_ratio, out[f"LYAP_{regime_window}"]
     ))
+    out["REGIME_CONFIDENCE"] = smooth_confidence(out["REGIME_CONFIDENCE_RAW"], confidence_ema_span)
     return out
 
 

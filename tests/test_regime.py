@@ -21,6 +21,7 @@ from investbot.scoring.technical.regime import (  # noqa: E402
     regime_scores,
     rolling_hurst,
     rolling_lyapunov,
+    smooth_confidence,
 )
 
 N = 600
@@ -118,13 +119,13 @@ def test_regime_value_ranges(full):
     valid = full.iloc[R.VOL_LONG:]
     assert set(valid["REGIME"].unique()) <= {0.0, 1.0, 2.0}
     for col in ("REGIME_SCORE_RANGE", "REGIME_SCORE_TREND", "REGIME_SCORE_CHAOS",
-                "REGIME_CONFIDENCE"):
+                "REGIME_CONFIDENCE_RAW", "REGIME_CONFIDENCE"):
         assert valid[col].between(0, 1).all(), col
     np.testing.assert_allclose(valid["REGIME_SCORE_RANGE"] + valid["REGIME_SCORE_TREND"], 1.0)
     scores = valid[["REGIME_SCORE_RANGE", "REGIME_SCORE_TREND", "REGIME_SCORE_CHAOS"]].to_numpy()
     np.testing.assert_array_equal(valid["REGIME"], scores.argmax(axis=1))
     top2 = np.sort(scores, axis=1)[:, -2:]
-    np.testing.assert_allclose(valid["REGIME_CONFIDENCE"], top2[:, 1] - top2[:, 0])
+    np.testing.assert_allclose(valid["REGIME_CONFIDENCE_RAW"], top2[:, 1] - top2[:, 0])
 
 
 # ──────────────────────────────────────────────────────────
@@ -165,6 +166,32 @@ def test_nan_close_only_poisons_windows_that_contain_it(ohlcv, full):
     assert out["HURST_100"].iloc[pos + 101:].notna().all()
     assert out["LYAP_100"].iloc[pos: pos + 101].isna().all()
     assert out["LYAP_100"].iloc[pos + 101:].notna().all()
+
+
+@pytest.mark.parametrize("cut", [251, 252, 260, 433])
+def test_smoothed_confidence_truncation_invariance(ohlcv, full, cut):
+    """The recursive EMA at bar t only depends on raw values up to t."""
+    trunc = add_regime(ohlcv.iloc[:cut])
+    for col in ("REGIME_CONFIDENCE_RAW", "REGIME_CONFIDENCE"):
+        np.testing.assert_allclose(trunc[col].to_numpy(), full[col].iloc[:cut].to_numpy(),
+                                   rtol=1e-9, atol=1e-12, equal_nan=True, err_msg=col)
+
+
+def test_nan_close_restarts_confidence_ema(ohlcv, full):
+    """After a gap in the raw series the EMA starts again from the first valid raw value."""
+    bad = ohlcv.copy()
+    pos = 320
+    bad.iloc[pos, bad.columns.get_loc("close")] = np.nan
+    out = add_regime(bad)
+    raw, conf = out["REGIME_CONFIDENCE_RAW"].to_numpy(), out["REGIME_CONFIDENCE"].to_numpy()
+    # REALVOL_250 keeps the raw value NaN for VOL_LONG bars after the bad return.
+    restart = pos + np.flatnonzero(np.isfinite(raw[pos:]))[0]
+    assert restart > pos + 100
+    assert np.isnan(conf[pos:restart]).all() and np.isfinite(raw[restart:]).all()
+    assert conf[restart] == raw[restart]
+    np.testing.assert_allclose(conf[restart:], smooth_confidence(raw[restart:]), rtol=1e-12)
+    # Before the gap nothing changes.
+    np.testing.assert_array_equal(conf[:pos], full["REGIME_CONFIDENCE"].to_numpy()[:pos])
 
 
 # ──────────────────────────────────────────────────────────
@@ -240,7 +267,7 @@ def test_confidence_is_continuous_across_label_flip():
     hurst = np.linspace(0.3, 0.7, 4001)
     n = len(hurst)
     out = regime_scores(hurst, np.full(n, R.ADX_NEUTRAL), np.full(n, 1.0), np.full(n, 0.26))
-    conf, label = out["REGIME_CONFIDENCE"], out["REGIME"]
+    conf, label = out["REGIME_CONFIDENCE_RAW"], out["REGIME"]
     assert set(np.unique(label)) == {R.REGIME_RANGE, R.REGIME_TREND}
     # No jumps: step size bounded by the sigmoid slope (1/4 per z unit).
     step_z = (hurst[1] - hurst[0]) * R.HURST_WEIGHT / R.HURST_SCALE
@@ -253,8 +280,66 @@ def test_confidence_is_continuous_across_label_flip():
 def test_regime_scores_propagate_nan():
     out = regime_scores(np.array([np.nan, 0.5]), np.array([20.0, 20.0]),
                         np.array([1.0, 1.0]), np.array([0.26, 0.26]))
-    assert np.isnan(out["REGIME"][0]) and np.isnan(out["REGIME_CONFIDENCE"][0])
+    assert np.isnan(out["REGIME"][0]) and np.isnan(out["REGIME_CONFIDENCE_RAW"][0])
     assert np.isfinite(out["REGIME"][1])
+
+
+def test_smooth_confidence_matches_hand_computed_ema():
+    # span 5 -> alpha = 1/3; y[t] = x[t] / 3 + 2 * y[t-1] / 3, seeded with the first value.
+    raw = np.array([np.nan, np.nan, 0.2, 0.8, 0.5, np.nan, 0.4, 1.0, 0.1])
+    expected = np.array([np.nan, np.nan,
+                         0.2,
+                         0.8 / 3 + 0.2 * 2 / 3,       # 0.4
+                         0.5 / 3 + 0.4 * 2 / 3,       # 0.4333...
+                         np.nan,
+                         0.4,                         # restart after the gap
+                         1.0 / 3 + 0.4 * 2 / 3,       # 0.6
+                         0.1 / 3 + 0.6 * 2 / 3])      # 0.4333...
+    np.testing.assert_allclose(smooth_confidence(raw), expected, rtol=1e-12, equal_nan=True)
+    assert R.CONFIDENCE_EMA_SPAN == 5
+
+
+def test_smooth_confidence_matches_pandas_ewm_without_gaps():
+    x = np.random.default_rng(3).uniform(0, 1, 200)
+    ref = pd.Series(x).ewm(span=R.CONFIDENCE_EMA_SPAN, adjust=False).mean().to_numpy()
+    np.testing.assert_allclose(smooth_confidence(x), ref, rtol=1e-12)
+
+
+def test_smooth_confidence_does_not_carry_state_across_gap():
+    """Whatever came before a NaN has no effect after it."""
+    tail = np.array([0.3, 0.5, 0.2, 0.7])
+    a = smooth_confidence(np.r_[0.0, 0.0, 0.0, np.nan, tail])
+    b = smooth_confidence(np.r_[1.0, 1.0, 1.0, np.nan, tail])
+    np.testing.assert_array_equal(a[4:], b[4:])
+    np.testing.assert_allclose(a[4:], smooth_confidence(tail))
+
+
+def test_smooth_confidence_rejects_bad_span():
+    with pytest.raises(ValueError):
+        smooth_confidence(np.array([0.5]), span=0)
+
+
+def test_compute_regime_confidence_span_parameter(ohlcv, full):
+    out = compute_regime(ohlcv, confidence_ema_span=1)
+    np.testing.assert_array_equal(out["REGIME_CONFIDENCE"], full["REGIME_CONFIDENCE_RAW"].to_numpy())
+
+
+def test_smoothing_cuts_flip_churn():
+    """A label flipping every few bars: smoothed confidence crosses 0.1 far less than raw."""
+    n = 300
+    t = np.arange(n)
+    hurst = 0.5 + 0.06 * np.sin(2 * np.pi * t / 8) + np.random.default_rng(0).normal(0, 0.01, n)
+    out = regime_scores(hurst, np.full(n, R.ADX_NEUTRAL), np.full(n, 1.0), np.full(n, 0.26))
+    raw = out["REGIME_CONFIDENCE_RAW"]
+    smoothed = smooth_confidence(raw)
+    assert (np.diff(out["REGIME"]) != 0).sum() > 50   # really flips every few bars
+
+    def crossings(x: np.ndarray) -> int:
+        side = np.sign(x - 0.1)
+        return int((side[1:] != side[:-1]).sum())
+
+    assert crossings(raw) > 100
+    assert crossings(smoothed) < crossings(raw) / 10
 
 
 # ──────────────────────────────────────────────────────────

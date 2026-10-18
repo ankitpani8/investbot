@@ -44,7 +44,8 @@ MTF alignment (``mtf_alignment``)
     MTF_MOMENTUM_ALIGN = the same weighted mean over the momentum regimes.
     MTF_REGIME_1D      = REGIME (0 range / 1 trend / 2 chaotic) from
                          ``regime.py`` on daily bars, previous session.
-    MTF_REGIME_CONFIDENCE_1D = REGIME_CONFIDENCE alongside it.
+    MTF_REGIME_CONFIDENCE_1D = REGIME_CONFIDENCE alongside it (the smoothed
+                         daily value, not REGIME_CONFIDENCE_RAW).
     The per-timeframe components are emitted as well (MTF_TREND_15M, ...),
     so ``scorer.py`` can explain a score. Regime is only taken from daily
     bars: its thresholds are calibrated for daily data (see BACKLOG).
