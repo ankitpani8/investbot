@@ -1,17 +1,20 @@
 """
 Smoke test for scoring/technical/indicators.py (TA-Lib backend).
 
-Picks the asset with the most daily history in the DB, runs the full
-indicator pipeline on it, and prints a diagnostic summary. Saves the
+Runs the full indicator pipeline on one asset (DEFAULT_SMOKE_TICKER, or the
+ticker given on the command line), and prints a diagnostic summary. Saves the
 full indicator DataFrame to a CSV file in ./tmp_output/ for manual
 inspection.
 
 Run from project root:
-    python -m scripts.smoke_indicators
+    python -m scripts.smoke_indicators [TICKER]
+
+If the default ticker has no daily rows, the asset with the most rows is used
+instead, with a printed warning. An explicit TICKER is never substituted.
 
 Exit codes:
     0 — at least MIN_EXPECTED_INDICATORS columns populated on latest bar
-    1 — DB not populated, or coverage below threshold
+    1 — DB not populated, coverage below threshold, or unknown/empty explicit ticker
 """
 from __future__ import annotations
 
@@ -30,6 +33,9 @@ from investbot.scoring.technical.indicators import (
 )
 
 MIN_EXPECTED_INDICATORS = 90   # sanity floor — we target ~115
+
+# Fixed asset under test, so purging bad rows elsewhere cannot change it.
+DEFAULT_SMOKE_TICKER = "RELIANCE.NS"
 
 # Project-root-relative output directory. Works on Windows, macOS, Linux.
 # __file__ = scripts/smoke_indicators.py; parent.parent = project root.
@@ -70,13 +76,49 @@ def _pick_best_asset(session) -> tuple[Asset | None, int]:
         .join(PriceDaily, PriceDaily.asset_id == Asset.id)
         .where(Asset.is_active.is_(True), Asset.asset_type == "stock")
         .group_by(Asset.id)
-        .order_by(func.count(PriceDaily.id).desc())
+        .order_by(func.count(PriceDaily.id).desc(), Asset.ticker)
         .limit(1)
     )
     row = session.execute(stmt).first()
     if row is None:
         return None, 0
     return row[0], row[1]
+
+
+class SmokeAssetError(Exception):
+    """The requested asset cannot be smoke-tested."""
+
+
+def select_smoke_asset(session, ticker: str | None = None) -> tuple[Asset, int, str | None]:
+    """
+    Choose the asset under test. Returns (asset, daily row count, warning or None).
+
+    ``ticker=None`` means DEFAULT_SMOKE_TICKER, with a fallback to the asset with the
+    most rows (and a warning naming both) when it has no daily rows. An explicit
+    ticker is never substituted: unknown or empty raises SmokeAssetError.
+    """
+    explicit = ticker is not None
+    wanted = ticker if explicit else DEFAULT_SMOKE_TICKER
+
+    asset = session.execute(select(Asset).where(Asset.ticker == wanted)).scalar_one_or_none()
+    if asset is None and explicit:
+        raise SmokeAssetError(f"Unknown ticker {wanted!r}: no such asset in the DB")
+    n = 0
+    if asset is not None:
+        n = session.execute(
+            select(func.count(PriceDaily.id)).where(PriceDaily.asset_id == asset.id)
+        ).scalar_one()
+    if n:
+        return asset, n, None
+    if explicit:
+        raise SmokeAssetError(f"{wanted} has no daily price rows")
+
+    best, best_n = _pick_best_asset(session)
+    if best is None:
+        raise SmokeAssetError("No daily price data in DB. Run Phase 1 ingestion first.")
+    warning = (f"{DEFAULT_SMOKE_TICKER} has no daily rows; falling back to {best.ticker} "
+               f"({best_n} rows). The asset under test is NOT the default.")
+    return best, best_n, warning
 
 
 def _load_daily_df(session, asset_id: int) -> pd.DataFrame:
@@ -172,7 +214,13 @@ def _save(df: pd.DataFrame, filename: str) -> Path:
     return path
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) > 1:
+        print("usage: python -m scripts.smoke_indicators [TICKER]", file=sys.stderr)
+        return 2
+    ticker = argv[0] if argv else None
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
@@ -181,10 +229,14 @@ def main() -> int:
 
     session = SessionLocal()
     try:
-        asset, n_daily = _pick_best_asset(session)
-        if asset is None:
-            log.error("No daily price data in DB. Run Phase 1 ingestion first.")
+        try:
+            asset, n_daily, warning = select_smoke_asset(session, ticker)
+        except SmokeAssetError as e:
+            log.error("%s", e)
             return 1
+        if warning:
+            print(f"WARNING: {warning}", file=sys.stderr)
+            log.warning("%s", warning)
 
         log.info("Selected %s (asset_id=%d) with %d daily rows",
                  asset.ticker, asset.id, n_daily)

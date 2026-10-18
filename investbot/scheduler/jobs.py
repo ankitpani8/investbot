@@ -2,10 +2,12 @@
 Scheduled jobs for data ingestion.
 Uses APScheduler to run:
 - Intraday price refresh every 15-30 min during market hours
-- Daily price update after market close
+- Daily post-close pipeline: price ingestion, data-quality audit, technical scoring
 - Quarterly financial statement check
 """
 import logging
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 
 import pytz
@@ -16,6 +18,8 @@ from investbot.config.settings import TIMEZONE
 from investbot.data.db import SessionLocal
 from investbot.data.ingestion.prices import ingest_all_prices
 from investbot.data.ingestion.financials import ingest_all_financials
+from investbot.data import quality
+from investbot.scoring.technical import scorer
 
 logger = logging.getLogger(__name__)
 tz = pytz.timezone(TIMEZONE)
@@ -38,14 +42,89 @@ def _job_intraday_refresh():
         session.close()
 
 
-def _job_daily_prices():
-    """Update daily prices after market close."""
-    logger.info("SCHEDULER: Daily price update triggered")
-    session = SessionLocal()
+@dataclass
+class PostCloseResult:
+    """Outcome of one post-close pipeline run."""
+    ingested: dict | None = None         # whatever ingest_all_prices returned; None if it failed
+    bad_rows: int | None = None          # None if the audit never ran
+    scored: dict[str, int] | None = None  # status counts; None if scoring was skipped
+    skipped_reason: str | None = None    # why scoring (or a later step) did not run
+
+
+def _log_bad_rows(bad: list) -> None:
+    """One ERROR line per (table, ticker) with reason counts, as `main.py dq` prints them."""
+    by_key = defaultdict(list)
+    for b in bad:
+        by_key[(b.table, b.ticker)].append(b)
+    for (table, ticker), rows in sorted(by_key.items()):
+        reasons = dict(Counter(r.reason for r in rows))
+        logger.error(
+            f"SCHEDULER: dq {table} {ticker}: {len(rows)} bad row(s) {reasons} "
+            f"{rows[0].when} -> {rows[-1].when}"
+        )
+
+
+def run_post_close(session) -> PostCloseResult:
+    """
+    Post-close pipeline: ingest daily prices, audit them, then refresh daily technical scores.
+
+    Bad rows are logged, never purged, and block scoring. A failing step is logged
+    with its name and the later steps are skipped; this function does not raise.
+    Intraday scoring is left out on purpose (15m history is too thin for MTF).
+    """
+    result = PostCloseResult()
+
     try:
-        ingest_all_prices(session, asset_type="stock")
-    except Exception as e:
-        logger.error(f"Daily price update failed: {e}")
+        result.ingested = ingest_all_prices(session, asset_type="stock")
+    except Exception:
+        logger.exception("SCHEDULER: post-close step 'ingest' failed; audit and scoring skipped")
+        result.skipped_reason = "ingest failed"
+        return result
+
+    try:
+        bad = quality.audit_prices(session)
+    except Exception:
+        logger.exception("SCHEDULER: post-close step 'audit' failed; scoring skipped")
+        result.skipped_reason = "audit failed"
+        return result
+    result.bad_rows = len(bad)
+    if bad:
+        _log_bad_rows(bad)
+        logger.error(
+            f"SCHEDULER: dq found {len(bad)} bad price row(s); scoring skipped. "
+            "Run `python main.py dq --purge` and re-ingest."
+        )
+        result.skipped_reason = f"dq failed: {len(bad)} bad price row(s)"
+        return result
+
+    try:
+        df = scorer.score_universe(asset_type="stock", timeframe="1d", session=session)
+        result.scored = dict(Counter(df["status"]))
+    except Exception:
+        logger.exception("SCHEDULER: post-close step 'score' failed")
+        result.skipped_reason = "score failed"
+        return result
+
+    counts = {k: result.scored.get(k, 0)
+              for k in ("ok", "warmup", "insufficient_data", "no_data", "error")}
+    counts.update({k: v for k, v in result.scored.items() if k not in counts})
+    logger.info("SCHEDULER: daily scoring done: " +
+                " ".join(f"{k}={v}" for k, v in counts.items()))
+    return result
+
+
+def _job_daily_prices():
+    """Post-close pipeline: ingest daily prices, audit them, then score."""
+    logger.info("SCHEDULER: Post-close pipeline triggered")
+    try:
+        session = SessionLocal()
+    except Exception:
+        logger.exception("SCHEDULER: post-close pipeline could not open a session")
+        return
+    try:
+        run_post_close(session)
+    except Exception:
+        logger.exception("SCHEDULER: post-close pipeline failed")
     finally:
         session.close()
 

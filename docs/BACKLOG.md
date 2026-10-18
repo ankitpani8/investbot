@@ -18,11 +18,11 @@ Status: `[ ]` open Â· `[~]` in progress (put the agent branch name next to it) Â
 - [x] Stale partial bars: upsert a trailing refresh window (5 daily sessions, 2 intraday trading days), never store today's daily bar before 16:00 IST, drop the forming 15m candle (`agent/000-ingest-refresh-window`)
 - [ ] Daily ingestion still downloads `DAILY_PERIOD` (5y) on every run even though only the trailing window can change. Fetch a short period when the asset already has history.
 - [ ] `ingest_all_prices` returns rows written (inserted + updated); `cmd_ingest` labels them "rows". Surface inserted/updated/rejected totals in the summary.
-- [ ] Run `dq` after the daily price job in the scheduler and surface failures (it exits 1 on bad rows).
-- [ ] `scripts/smoke_indicators.py` picks the asset with the most rows, so the asset under test changes when rows are purged (RELIANCE â†’ ITC). Take an optional ticker argument and default to a fixed one.
+- [x] Run `dq` after the daily price job in the scheduler and surface failures: `run_post_close` audits after ingest, logs one ERROR per (table, ticker), never purges, and bad rows block scoring (`agent/210-scheduler-post-close-pipeline`)
+- [x] `scripts/smoke_indicators.py [TICKER]`, default `DEFAULT_SMOKE_TICKER = "RELIANCE.NS"`; falls back to the largest asset with a printed warning, unknown explicit ticker exits 1 (`agent/210-scheduler-post-close-pipeline`)
 - [x] `_extensions.py` `pct_change(fill_method=None)`: a NaN close is no longer masked in the return columns (`agent/005-housekeeping`)
 - [x] `CUMPCTRET_1` / `CUMLOGRET_1` are NaN on any NaN-return bar and restart from the next valid bar (`agent/130-mtf-weights-and-cumret`)
-- [ ] Add `dq` and `score` to the CLI list in `CLAUDE.md`.
+- [x] Add `dq` and `score` to the CLI list in `CLAUDE.md` (already in the Layout line)
 
 ## Phase 2: technical scoring
 - [x] Indicator layer (TA-Lib core + extensions): 112 columns, smoke-tested
@@ -61,7 +61,10 @@ Status: `[ ]` open Â· `[~]` in progress (put the agent branch name next to it) Â
 - [ ] `scorer.py` follow-up: backtests calling `score(as_of=t)` for every date recompute a 750-bar window each time (~0.5 s/asset/date). Add a batch path that computes the frame once on the history and reads every bar (identical up to the fixed lookback window), and test it against `score(as_of=t)`.
 - [ ] `scorer.py` follow-up: 24x7 assets (crypto). The as_of rule (a daily bar counts from 16:00 IST) and the NSE-session 15m resampling in `mtf_alignment` are equity-specific; `score(<crypto>, "15m")` comes back `status="error"`. Take the cutoff and session from `asset_classes` (`market_open/close`, `is_24x7`).
 - [ ] `scorer.py` follow-up: the combined layer should write `scores.technical_score` (0-100 in the plan) from `technical_scores.tech_score` ([-1, 1]); see the pending decision on the scale.
-- [ ] `scorer.py` follow-up: add a scheduler job that runs `score_universe` after the daily price job (and `"15m"` after the intraday job).
+- [x] `scorer.py` follow-up (daily part): `score_universe("stock", "1d")` runs after a clean dq audit in the post-close pipeline (`agent/210-scheduler-post-close-pipeline`)
+- [ ] `scorer.py` follow-up (15m part): score `"15m"` after the intraday job. Left out of 210 because the 15m history is too thin for MTF (see the MTF item).
+- [ ] Scheduler: `audit_prices` scans every stored row (all history, both tables), so one old bad intraday row blocks daily scoring until someone runs `main.py dq --purge`. Consider auditing only the rows touched by the run, or a daily-only gate.
+- [ ] Scheduler: `run_post_close` has no alert channel beyond ERROR logs; add a notification when scoring is skipped.
 - [ ] `scorer.py` follow-up: staleness counts business days without an NSE holiday calendar, so a long holiday weekend can read 1 day staler than it is.
 - [ ] The scratch DB still has TATAMOTORS.NS active with no price rows (the seed's `RETIRED_TICKERS` deactivation has not run there, and TMPV.NS is absent). `main.py score` lists it as `no_data`. Check the real DB after the next `setup`.
 
