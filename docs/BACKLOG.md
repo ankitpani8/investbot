@@ -29,6 +29,9 @@ Status: `[ ]` open Â· `[~]` in progress (put the agent branch name next to it) Â
 - [ ] Candle patterns are price-only. Consider volume confirmation (e.g. relative volume on the pattern bar) in `confluence.py`.
 - [ ] `support_resistance.py` (swing pivots, volume profile, Fibonacci)
 - [x] `regime.py`: rolling DFA Hurst, Rosenstein Lyapunov, realised vol, REGIME + smooth REGIME_CONFIDENCE (`agent/030-regime`)
+- [x] Smooth REGIME_CONFIDENCE with a causal 5-bar EMA (`CONFIDENCE_EMA_SPAN`), restart after NaN gaps; raw gap kept as `REGIME_CONFIDENCE_RAW`; confluence/MTF use the smoothed value; `SCORER_VERSION` 2 (`agent/110-regime-confidence-smoothing`). On scratch-DB daily data (RELIANCE/INFY/HDFCBANK/ITC) crossings of confidence = 0.1 drop from ~170-186 to 16-28 per ~985 bars.
+- [ ] Regime-confidence follow-up: test `CONFIDENCE_EMA_SPAN` (5) against forward returns and turnover in the evaluation harness, alongside the threshold re-fit below.
+- [ ] Regime-confidence follow-up: `technical_scores` stores only the smoothed `regime_confidence`. Add a `regime_confidence_raw` column if the dashboard or the harness needs the unsmoothed gap per stored row.
 - [ ] Regime thresholds were hand-calibrated on in-sample NIFTY50 daily data (label shares ~47% range / 50% trend / 3% chaotic). Re-fit them, or at least sanity-check them, against forward returns once the backtest layer exists.
 - [ ] `LYAP_CHAOS` is calibrated for daily bars at `regime_window=100`. Intraday (15m/1h) bars need their own calibration before `multi_timeframe.py` uses regime on them.
 - [ ] HURST_100 still reads ~0.53 on a random walk (DFA small-sample bias). Consider a Monte-Carlo bias correction per window if the regime layer needs it.
