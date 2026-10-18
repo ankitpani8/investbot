@@ -9,9 +9,17 @@ Timing (daily bars)
         FWD_RET_<h>    = close[t+h] / open[t+1] - 1      (entry next open, exit close t+h)
         FWD_CC_RET_<h> = close[t+h] / close[t]  - 1      (close-to-close, for comparison only;
                                                           it assumes a fill at t's close)
+        FWD_OO_RET_<h> = open[t+1+h] / open[t+1] - 1     (open-to-open: enter at the next open,
+                                                          exit at the open h bars later)
+
+    ``FWD_RET`` drops the overnight gap close[t+h] -> open[t+h+1]. ``FWD_OO_RET``
+    keeps it: consecutive h-bar periods starting every h bars tile the timeline
+    with no gap, so they compound into a continuously-held portfolio
+    (``metrics.held_portfolio``).
 
     ``t+k`` is the k-th *stored* bar after t for that asset (a missing session
-    is skipped, not filled). The last h bars have no label (NaN).
+    is skipped, not filled). The last h bars have no ``FWD_RET`` / ``FWD_CC_RET``
+    label and the last h + 1 bars no ``FWD_OO_RET`` label (NaN).
 
 Separation
     Labels live in their own frame and are never passed to a feature function.
@@ -28,7 +36,8 @@ HORIZONS: tuple[int, ...] = (1, 5, 20)
 
 
 def label_columns(horizons=HORIZONS) -> list[str]:
-    return [f"FWD_RET_{h}" for h in horizons] + [f"FWD_CC_RET_{h}" for h in horizons]
+    return ([f"FWD_RET_{h}" for h in horizons] + [f"FWD_CC_RET_{h}" for h in horizons]
+            + [f"FWD_OO_RET_{h}" for h in horizons])
 
 
 def _lead(x: np.ndarray, k: int) -> np.ndarray:
@@ -40,7 +49,7 @@ def _lead(x: np.ndarray, k: int) -> np.ndarray:
 
 
 def forward_returns(bars: pd.DataFrame, horizons=HORIZONS) -> dict[str, np.ndarray]:
-    """``FWD_RET_<h>`` (next-open entry) and ``FWD_CC_RET_<h>`` for each h, on ``bars``' index."""
+    """``FWD_RET_<h>``, ``FWD_CC_RET_<h>`` and ``FWD_OO_RET_<h>`` for each h, on ``bars``' index."""
     open_ = bars["open"].to_numpy(dtype=np.float64)
     close = bars["close"].to_numpy(dtype=np.float64)
     entry = _lead(open_, 1)
@@ -52,4 +61,6 @@ def forward_returns(bars: pd.DataFrame, horizons=HORIZONS) -> dict[str, np.ndarr
             out[f"FWD_RET_{h}"] = _lead(close, h) / entry - 1.0
         for h in horizons:
             out[f"FWD_CC_RET_{h}"] = _lead(close, h) / close - 1.0
+        for h in horizons:
+            out[f"FWD_OO_RET_{h}"] = _lead(open_, 1 + h) / entry - 1.0
     return out
