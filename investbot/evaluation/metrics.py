@@ -27,7 +27,21 @@ Turnover and costs
     the previous one (1 at the first rebalance). Net return per period =
     gross - turnover * ``ROUND_TRIP_COST``: each replaced name costs one round
     trip (sell the old, buy the new) on its weight. The universe equal-weight
-    return over the same periods is the benchmark.
+    return over the same periods is the benchmark. These ``lo_*`` numbers use
+    the open[t+1] -> close[t+h] label, so the overnight gap before the next
+    entry is not held (simple annualisation, not compounded).
+
+Held portfolio (``held_*``)
+    The same top-bucket portfolio and turnover, but each period's return is
+    the open-to-open label ``FWD_OO_RET_h`` (open[t+1] -> open[t+1+h]), so
+    consecutive periods tile the timeline and compound into an equity curve:
+    CAGR (gross, net, universe), volatility, max drawdown and information
+    ratio against the universe. No risk-free rate.
+
+Pooled IC (``pooled_*``)
+    For thin subsets (e.g. one regime) where few dates reach ``MIN_NAMES``:
+    per-date centred ranks scaled to [-0.5, 0.5], pooled over every
+    (date, name) row of dates with >= ``POOLED_MIN_NAMES`` names.
 """
 from __future__ import annotations
 
@@ -36,10 +50,12 @@ import math
 import numpy as np
 import pandas as pd
 
-from investbot.evaluation.stats import newey_west_tstat, normal_pvalue, spearman
+from investbot.evaluation.stats import newey_west_se, newey_west_tstat, normal_pvalue, spearman
 
 #: Fewer names than this on a date: the date is skipped.
 MIN_NAMES: int = 10
+#: Minimum joint names on a date for it to enter the pooled IC.
+POOLED_MIN_NAMES: int = 3
 N_QUANTILES: int = 5
 #: Order size at which the flat ₹20 brokerage is converted into a percentage.
 REFERENCE_TRADE_VALUE: float = 100_000.0
@@ -203,8 +219,136 @@ def long_only_costs(members: pd.DataFrame, Y: pd.DataFrame, horizon: int,
     }
 
 
+HELD_KEYS: tuple[str, ...] = ("n_periods", "turnover", "cagr_gross", "cagr_net", "cagr_universe",
+                              "vol_ann_net", "max_drawdown_net", "info_ratio_net")
+
+
+def held_periods(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
+                 cost: float = ROUND_TRIP_COST) -> pd.DataFrame:
+    """
+    Per-period returns of the continuously-held top-bucket portfolio.
+
+    One row per rebalance date (every ``horizon`` rows) that has at least one
+    member with a finite ``FWD_OO_RET_h``: ``gross`` (equal-weight mean over
+    those members), ``turnover`` (as in ``long_only_costs``), ``net`` =
+    gross - turnover * cost, and ``universe`` (equal-weight mean over every
+    name with a finite label, cost-free). A rebalance date without members is
+    left out, so the curve covers invested periods only.
+    """
+    reb = rebalance_dates(members.index, horizon)
+    m = members.loc[reb]
+    y = Y_oo.loc[reb].reindex(columns=members.columns).to_numpy(dtype=np.float64)
+    finite = np.isfinite(y)
+    mm = m.to_numpy(dtype=bool) & finite
+    cnt = mm.sum(axis=1)
+    has = cnt > 0
+    gross = np.where(mm, y, 0.0).sum(axis=1)[has] / cnt[has]
+    to = turnover(m[has]).to_numpy()
+    univ = np.where(finite, y, 0.0).sum(axis=1)[has] / np.maximum(finite.sum(axis=1)[has], 1)
+    return pd.DataFrame({"gross": gross, "turnover": to, "net": gross - to * cost,
+                         "universe": univ}, index=reb[has])
+
+
+def _cagr(r: np.ndarray, years: float) -> float:
+    growth = float(np.prod(1.0 + r))
+    if growth <= 0.0:
+        return -1.0
+    return growth ** (1.0 / years) - 1.0
+
+
+def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
+                   cost: float = ROUND_TRIP_COST) -> dict[str, float]:
+    """
+    Compounded top-bucket portfolio held open-to-open between rebalances.
+
+    Period returns come from ``held_periods``. With n periods of h bars,
+    years = n * h / 252 and
+
+        cagr_*            prod(1 + r) ** (1 / years) - 1, for gross, net and the universe
+        vol_ann_net       sd of the net period returns * sqrt(252 / h)
+        max_drawdown_net  worst peak-to-trough of the compounded net curve (starting
+                          at 1), as a negative fraction (0 if it never falls)
+        info_ratio_net    mean / sd of (net - universe) period returns * sqrt(252 / h)
+        turnover          mean turnover after the first rebalance
+
+    No risk-free rate is used: the comparison is against the equal-weight
+    universe over the same periods, not against cash.
+    """
+    p = held_periods(members, Y_oo, horizon, cost)
+    n = len(p)
+    out = dict.fromkeys(HELD_KEYS, math.nan)
+    out["n_periods"] = n
+    if n == 0:
+        return out
+    years = n * horizon / TRADING_DAYS
+    net = p["net"].to_numpy()
+    active = net - p["universe"].to_numpy()
+    scale = math.sqrt(TRADING_DAYS / horizon)
+    curve = np.cumprod(np.r_[1.0, 1.0 + net])
+    out.update({
+        "turnover": float(p["turnover"].iloc[1:].mean()) if n > 1 else math.nan,
+        "cagr_gross": _cagr(p["gross"].to_numpy(), years),
+        "cagr_net": _cagr(net, years),
+        "cagr_universe": _cagr(p["universe"].to_numpy(), years),
+        "max_drawdown_net": float((curve / np.maximum.accumulate(curve) - 1.0).min()),
+    })
+    if n > 1:
+        out["vol_ann_net"] = float(net.std(ddof=1) * scale)
+        sd = float(active.std(ddof=1))
+        out["info_ratio_net"] = float(active.mean() / sd * scale) if sd > 0 else math.nan
+    return out
+
+
+def pooled_ic(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
+              min_names: int = POOLED_MIN_NAMES) -> dict[str, float]:
+    """
+    Pooled (panel) rank IC over every date with >= ``min_names`` joint names.
+
+    On each date S and Y become average ranks scaled to [-0.5, 0.5]
+    ((rank - 1) / (n - 1) - 0.5), demeaned per date: r_s, r_y. Then
+
+        pooled_ic = sum_d sum_i r_s * r_y / sqrt(sum r_s^2 * sum r_y^2)
+
+    over all rows. Dates where S or Y has no cross-sectional variance are left
+    out (as in ``daily_ic``). Treating the denominator as fixed, pooled_ic is
+    a constant times the mean of the per-date sums a_d = sum_i r_s * r_y, so
+    its t-stat is mean(a) / Newey-West se(a) with lag h - 1.
+    With the same names and rank dispersion on every date this equals the
+    mean daily Spearman IC; otherwise dates with more names weigh more.
+    """
+    s, y = joint_mask(S, Y, max(min_names, 2))
+    rs = s.rank(axis=1, method="average").to_numpy(dtype=np.float64)
+    ry = y.rank(axis=1, method="average").to_numpy(dtype=np.float64)
+    ok = np.isfinite(rs)
+    n = ok.sum(axis=1)
+    den = np.maximum(n - 1, 1)[:, None]
+    nn = np.maximum(n, 1)[:, None]
+    rs = np.where(ok, (rs - 1.0) / den - 0.5, 0.0)
+    ry = np.where(ok, (ry - 1.0) / den - 0.5, 0.0)
+    rs = np.where(ok, rs - rs.sum(axis=1, keepdims=True) / nn, 0.0)
+    ry = np.where(ok, ry - ry.sum(axis=1, keepdims=True) / nn, 0.0)
+    a = (rs * ry).sum(axis=1)
+    b = (rs * rs).sum(axis=1)
+    c = (ry * ry).sum(axis=1)
+    use = (n >= max(min_names, 2)) & (b > 0) & (c > 0)
+    out = {"pooled_ic": math.nan, "pooled_t_nw": math.nan,
+           "pooled_n_obs": int(n[use].sum()), "pooled_n_dates": int(use.sum())}
+    if not use.any():
+        return out
+    a = a[use]
+    scale = a.size / math.sqrt(float(b[use].sum()) * float(c[use].sum()))
+    out["pooled_ic"] = float(a.sum()) / math.sqrt(float(b[use].sum()) * float(c[use].sum()))
+    se = newey_west_se(a, max(horizon - 1, 0)) * scale
+    if np.isfinite(se):
+        out["pooled_t_nw"] = (out["pooled_ic"] / se if se > 0
+                              else math.copysign(math.inf, out["pooled_ic"]))
+    return out
+
+
 def quintile_summary(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
-                     min_names: int = MIN_NAMES, cost: float = ROUND_TRIP_COST) -> dict[str, float]:
+                     min_names: int = MIN_NAMES, cost: float = ROUND_TRIP_COST,
+                     Y_oo: pd.DataFrame | None = None) -> dict[str, float]:
+    """Quintile means, spread, ``lo_*`` (open→close) and ``held_*`` (open→open, if ``Y_oo``)."""
     buckets = quantile_buckets(S, Y, min_names)
     rets = bucket_returns(buckets, Y)
     spread = spread_series(buckets, rets)
@@ -218,11 +362,19 @@ def quintile_summary(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
     members = top_membership(buckets)
     out.update({f"lo_{k}": v for k, v in long_only_costs(members, Y, horizon, cost).items()})
     out["top_turnover"] = out.pop("lo_turnover")
+    held = (held_portfolio(members, Y_oo, horizon, cost) if Y_oo is not None
+            else dict.fromkeys(HELD_KEYS, math.nan))
+    out.update({f"held_{k}": v for k, v in held.items() if k != "turnover"})
     return out
 
 
 def signal_metrics(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
-                   min_names: int = MIN_NAMES, cost: float = ROUND_TRIP_COST) -> dict[str, float]:
-    """IC summary + quintile summary for one signal, label and horizon on the given rows."""
+                   min_names: int = MIN_NAMES, cost: float = ROUND_TRIP_COST,
+                   Y_oo: pd.DataFrame | None = None) -> dict[str, float]:
+    """IC summary + quintile summary for one signal, label and horizon on the given rows.
+
+    ``Y_oo`` is the matching ``FWD_OO_RET_h`` matrix for the held portfolio
+    (``held_*`` keys are NaN without it). Buckets always come from ``Y``'s joint mask.
+    """
     return {**ic_summary(daily_ic(S, Y, min_names), horizon),
-            **quintile_summary(S, Y, horizon, min_names, cost)}
+            **quintile_summary(S, Y, horizon, min_names, cost, Y_oo)}

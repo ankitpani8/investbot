@@ -9,13 +9,17 @@ long metrics table, one row per (signal, label, horizon, subset):
     subset    "oos"           every walk-forward test block (the headline)
               "all"           every date, train periods included (context only)
               "block:<a..b>"  one test block (IC columns only)
-              "regime:<r>"    OOS dates, names whose REGIME on that date is r
+              "regime:<r>"    OOS dates, names whose REGIME on that date is r; these rows
+                              also carry the pooled IC (``pooled_*``, NaN elsewhere)
               "year:<YYYY>"   OOS dates of one calendar year
 
 Then, on the headline rows (label "open", subset "oos") only:
     ic_q            Benjamini–Hochberg q-value across all those tests
     block_sign_share share of test blocks whose mean IC has the sign of the OOS mean IC
     promising       ic_q < PROMISING_Q and block_sign_share >= PROMISING_SIGN_SHARE
+
+Every row with quintile metrics also has the open-to-open held portfolio
+(``held_*``, from ``FWD_OO_RET_h``) next to the open→close ``lo_*`` check.
 
 Nothing is fitted, and a signal's polarity is used as designed: a significant
 negative IC is reported as such (``direction``), not flipped.
@@ -34,6 +38,7 @@ from investbot.evaluation.metrics import (
     ROUND_TRIP_COST,
     daily_ic,
     ic_summary,
+    pooled_ic,
     signal_metrics,
 )
 from investbot.evaluation.panel import signal_columns
@@ -83,7 +88,8 @@ def evaluate(
 
     regime = _wide(features["REGIME"], cal, tickers)
     ys = {(kind, h): _wide(labels[f"{col}_{h}"], cal, tickers)
-          for h in horizons for kind, col in (("open", "FWD_RET"), ("close", "FWD_CC_RET"))}
+          for h in horizons for kind, col in (("open", "FWD_RET"), ("close", "FWD_CC_RET"),
+                                              ("oo", "FWD_OO_RET"))}
     years = sorted(set(oos.year))
 
     rows: list[dict] = []
@@ -93,25 +99,31 @@ def evaluate(
             continue                       # e.g. TECH_SCORE_MTF on daily-only frames
         for h in horizons:
             Y = ys[("open", h)]
+            Yo = ys[("oo", h)]
 
             def add(subset, label, metrics):
                 rows.append({"signal": sig, "label": label, "horizon": h,
                              "subset": subset, **metrics})
 
-            add("oos", "open", signal_metrics(S.loc[oos], Y.loc[oos], h, min_names, cost))
-            add("all", "open", signal_metrics(S, Y, h, min_names, cost))
+            add("oos", "open", signal_metrics(S.loc[oos], Y.loc[oos], h, min_names, cost,
+                                              Yo.loc[oos]))
+            add("all", "open", signal_metrics(S, Y, h, min_names, cost, Yo))
             Yc = ys[("close", h)]
-            add("oos", "close", signal_metrics(S.loc[oos], Yc.loc[oos], h, min_names, cost))
+            add("oos", "close", signal_metrics(S.loc[oos], Yc.loc[oos], h, min_names, cost,
+                                               Yo.loc[oos]))
 
             ic = daily_ic(S, Y, min_names)
             for sp in splits:
                 add(f"block:{sp.label}", "open", ic_summary(ic.loc[sp.test], h))
             for code, name in REGIME_NAMES.items():
                 Sr = S.loc[oos].where(regime.loc[oos] == code)
-                add(f"regime:{name}", "open", signal_metrics(Sr, Y.loc[oos], h, min_names, cost))
+                add(f"regime:{name}", "open",
+                    {**signal_metrics(Sr, Y.loc[oos], h, min_names, cost, Yo.loc[oos]),
+                     **pooled_ic(Sr, Y.loc[oos], h)})
             for yr in years:
                 d = oos[oos.year == yr]
-                add(f"year:{yr}", "open", signal_metrics(S.loc[d], Y.loc[d], h, min_names, cost))
+                add(f"year:{yr}", "open",
+                    signal_metrics(S.loc[d], Y.loc[d], h, min_names, cost, Yo.loc[d]))
 
     table = pd.DataFrame(rows)
     if table.empty:
