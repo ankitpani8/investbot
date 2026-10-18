@@ -216,7 +216,9 @@ $(awk 'NR==1 && /^---$/ {h=1; next} h && /^---$/ {h=0; next} !h' "$task")"
     git -C "$REPO" branch -D "$br" -q 2>/dev/null
     log "DONE $id → merged to main ($(git -C "$REPO" rev-parse --short origin/main 2>/dev/null))"
   else
-    block "$task" "${why:-integration failed}" "$wt" "$br"
+    # Say what the agent last printed, so "no commits" etc. is diagnosable from status.sh
+    local tailmsg; tailmsg=$(grep -v '^[[:space:]]*$' "$logf" | tail -5 | cut -c1-200 | tr '\n' ' ')
+    block "$task" "${why:-integration failed} | agent's last output: $tailmsg" "$wt" "$br"
   fi
 }
 
