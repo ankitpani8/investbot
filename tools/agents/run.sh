@@ -152,7 +152,7 @@ run_claude() {   # wt prompt logf model effort
     local msg="$prompt"
     [ $cont = 1 ] && msg="You were interrupted by a usage limit. Continue the task from where you left off. Re-read your previous messages and the git log on this branch first."
     local start=0; [ -f "$logf" ] && start=$(wc -l < "$logf")
-    ( cd "$wt" && agent_env "$wt" timeout "$AGENT_TIMEOUT" claude "${args[@]}" "$msg" ) >>"$logf" 2>&1
+    ( cd "$wt" && agent_env "$wt" timeout --foreground "$AGENT_TIMEOUT" claude "${args[@]}" "$msg" ) >>"$logf" 2>&1
     local rc=$?
     local out; out=$(tail -n +"$((start+1))" "$logf")
     # Usage limit: Claude Code may exit 0 *or* non-zero, so key on the message itself.
@@ -203,6 +203,23 @@ integrate() {   # task_path wt branch → 0 merged / 1 blocked
   ) 8>"$LOCKS/merge.lock"
 }
 
+resolve_conflicts() {   # wt logf model effort
+  local wt=$1 logf=$2 model=$3 effort=$4 files
+  ( cd "$wt" && git fetch -q origin && git rebase origin/main >/dev/null 2>&1 ) && return 0   # resolved itself (main moved)
+  files=$(cd "$wt" && git diff --name-only --diff-filter=U | tr '\n' ' ')
+  local prompt="You are an unattended developer agent on InvestBot. Nobody will answer questions.
+In this git worktree, 'git rebase origin/main' stopped with merge conflicts in: $files
+Another task merged to main while you worked. Resolve every conflict so BOTH changes survive:
+- SCORER_VERSION: take the highest version on either side plus 1, and extend the comment.
+- Column/family contracts, constant lists, docs (BACKLOG/CHANGELOG): keep both sides' entries.
+Then: git add the files, run 'GIT_EDITOR=true git rebase --continue' (repeat until the rebase finishes),
+run 'python -m pytest -q' and fix anything you broke. Don't push. Last line: RESULT: DONE or RESULT: BLOCKED <reason>."
+  echo "===== $(date '+%F %T') conflict resolution =====" >>"$logf"
+  run_claude "$wt" "$prompt" "$logf" "$model" "$effort"
+  ( cd "$wt" && [ -d .git/rebase-merge ] || [ -d "$(git rev-parse --git-dir)/rebase-merge" ] ) && ( cd "$wt" && git rebase --abort )
+  return 0
+}
+
 run_task() {
   local task=$1 id br wt logf; id=$(basename "$task" .md); br="agent/$id"; wt="$WT/$id"; logf="$L/$id.log"
   log "START $id"
@@ -229,8 +246,16 @@ $(awk 'NR==1 && /^---$/ {h=1; next} h && /^---$/ {h=0; next} !h' "$task")"
   if tail -50 "$logf" | grep -q 'RESULT: BLOCKED'; then
     block "$task" "$(tail -50 "$logf" | grep 'RESULT: BLOCKED' | tail -1)" "$wt" "$br"; return
   fi
-  local why
-  if why=$(integrate "$task" "$wt" "$br"); then
+  local why rc
+  why=$(integrate "$task" "$wt" "$br"); rc=$?
+  if [ $rc = 4 ]; then
+    # Parallel tasks often touch the same lines (SCORER_VERSION, column contracts). Let the
+    # agent resolve the rebase itself, once, then gate on the full test suite as usual.
+    log "  $id: rebase conflict with main; asking the agent to resolve it"
+    resolve_conflicts "$wt" "$logf" "$model" "$effort"
+    why=$(integrate "$task" "$wt" "$br"); rc=$?
+  fi
+  if [ $rc = 0 ]; then
     mv "$task" "$D"/
     git -C "$REPO" worktree remove --force "$wt" 2>/dev/null
     git -C "$REPO" branch -D "$br" -q 2>/dev/null
@@ -299,8 +324,14 @@ log "Runner start: repo=$REPO workers=$WORKERS worker=$WORKER_MODEL/$WORKER_EFFO
 if [ -f "$AG/runner.pid" ] && kill -0 "$(cat "$AG/runner.pid")" 2>/dev/null; then
   echo "A runner is already running (pid $(cat "$AG/runner.pid")). Stop it with: touch $AG/STOP"; exit 1
 fi
+others=$(ps -eo pid=,ppid=,args= | awk -v me=$$ '$1 != me && $2 != me && $3 ~ /bash$/ && $4 ~ /tools\/agents\/run\.sh$/ {print $1}')
+if [ -n "$others" ]; then
+  echo "Another runner process is still alive (pids: $others), possibly a worker orphaned by an earlier Ctrl-C."
+  echo "Stop it first:  kill $others   (or: pkill -f tools/agents/run.sh)"; exit 1
+fi
 echo $$ > "$AG/runner.pid"
 trap 'rm -f "$AG/runner.pid"' EXIT
+trap 'log "Interrupted: stopping all workers and agents"; trap - INT TERM; kill 0' INT TERM
 rm -f "$AG/STOP" "$AG/PLANNER_EMPTY"
 for i in $(seq 1 "$WORKERS"); do worker "$i" & sleep 20; done
 wait
