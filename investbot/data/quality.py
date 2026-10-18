@@ -15,10 +15,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 
+import pandas as pd
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from investbot.data.models import Asset, PriceDaily, PriceIntraday
+from investbot.data.corporate_actions import load_actions
+from investbot.data.models import Asset, CorporateAction, PriceDaily, PriceIntraday
 
 logger = logging.getLogger(__name__)
 
@@ -127,3 +129,72 @@ def purge_bad_rows(session: Session, bad: list[BadRow]) -> int:
             deleted += session.execute(delete(model).where(model.id.in_(chunk))).rowcount
     session.commit()
     return deleted
+
+
+# ──────────────────────────────────────────────────────────
+# Split consistency
+# ──────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SplitIssue:
+    ticker: str
+    ex_date: date
+    factor: float                    # new/old shares from the corporate action
+    observed_ratio: float            # close[prev bar] / open[ex bar]
+
+
+def detect_unadjusted_splits(
+    bars: pd.DataFrame, actions: pd.DataFrame, tol: float = 0.15, ticker: str = "",
+) -> list[SplitIssue]:
+    """
+    Splits whose pre-ex-date history was not re-adjusted.
+
+    For each split with an ex-date inside the stored bars, compare
+    `close[prev bar] / open[ex bar]` with the factor. Adjusted history gives a
+    ratio near 1; unadjusted history gives a ratio near the factor. A ratio
+    within `tol` (relative) of the factor is flagged, and a ratio nearer 1 is not,
+    so an ordinary gap day never matches a split of factor 1.5 or more.
+    `bars` has a date index and `open`/`close` columns; `actions` is the
+    `load_actions` frame. Pure; no NaN dropping (a NaN price is simply not flagged).
+    """
+    if len(bars) == 0 or len(actions) == 0:
+        return []
+    splits = actions[actions["action_type"] == "split"]
+    if splits.empty:
+        return []
+    idx = pd.DatetimeIndex(bars.index).normalize()
+    opens = bars["open"].to_numpy(dtype=float)
+    closes = bars["close"].to_numpy(dtype=float)
+
+    issues: list[SplitIssue] = []
+    for ex, factor in zip(pd.DatetimeIndex(splits.index).normalize(), splits["value"].to_numpy(dtype=float)):
+        if not factor > 0 or factor == 1.0:
+            continue
+        i = int(idx.searchsorted(ex, side="left"))
+        if i == 0 or i >= len(idx):
+            continue                                  # ex-date not inside the stored bars
+        o, c = opens[i], closes[i - 1]
+        if not (o > 0 and c > 0):
+            continue
+        ratio = c / o
+        if abs(ratio - factor) <= tol * factor:
+            issues.append(SplitIssue(ticker, ex.date(), float(factor), float(ratio)))
+    return issues
+
+
+def audit_splits(session: Session) -> list[SplitIssue]:
+    """Run `detect_unadjusted_splits` for every asset that has splits, one at a time. Read-only."""
+    issues: list[SplitIssue] = []
+    rows = session.execute(
+        select(Asset.id, Asset.ticker).where(
+            Asset.id.in_(select(CorporateAction.asset_id).where(CorporateAction.action_type == "split"))
+        ).order_by(Asset.ticker)
+    ).all()
+    for asset_id, ticker in rows:
+        bars = pd.read_sql(
+            select(PriceDaily.date, PriceDaily.open, PriceDaily.close)
+            .where(PriceDaily.asset_id == asset_id).order_by(PriceDaily.date),
+            session.connection(), index_col="date", parse_dates=["date"],
+        )
+        issues.extend(detect_unadjusted_splits(bars, load_actions(session, ticker), ticker=ticker))
+    return issues

@@ -176,40 +176,56 @@ def cmd_gaps():
 
 
 def cmd_dq():
-    """Audit stored price rows against the ingestion rules; optionally delete the bad ones."""
+    """Audit stored price rows against the ingestion rules (optionally delete the bad ones) and check splits."""
     from collections import Counter, defaultdict
-    from investbot.data.quality import audit_prices, purge_bad_rows
+    from investbot.data.models import Base
+    from investbot.data.quality import audit_prices, audit_splits, purge_bad_rows
 
     purge = "--purge" in sys.argv[2:]
     session = SessionLocal()
     try:
+        Base.metadata.create_all(session.get_bind())   # corporate_actions may be missing on an existing DB
         bad = audit_prices(session)
+        split_issues = audit_splits(session)
+        failed = False
+
         if not bad:
-            print("\n  Data quality OK: no bad price rows.\n")
-            return
+            print("\n  Data quality OK: no bad price rows.")
+        else:
+            by_key = defaultdict(list)
+            for b in bad:
+                by_key[(b.table, b.ticker)].append(b)
 
-        by_key = defaultdict(list)
-        for b in bad:
-            by_key[(b.table, b.ticker)].append(b)
+            print(f"\n  {len(bad)} bad price row(s) in {len(by_key)} (table, asset) group(s):")
+            for (table, ticker), rows in sorted(by_key.items()):
+                reasons = dict(Counter(r.reason for r in rows))
+                first, last = rows[0].when, rows[-1].when
+                print(f"    {table:<15s} {ticker:<16s} {len(rows):>3}  {reasons}  {first} → {last}")
 
-        print(f"\n  {len(bad)} bad price row(s) in {len(by_key)} (table, asset) group(s):")
-        for (table, ticker), rows in sorted(by_key.items()):
-            reasons = dict(Counter(r.reason for r in rows))
-            first, last = rows[0].when, rows[-1].when
-            print(f"    {table:<15s} {ticker:<16s} {len(rows):>3}  {reasons}  {first} → {last}")
+            print("\n  By table and reason:")
+            for (table, reason), n in sorted(Counter((b.table, b.reason) for b in bad).items()):
+                dates = sorted({str(b.when) for b in bad if b.table == table and b.reason == reason})
+                shown = ", ".join(dates[:8]) + (f" (+{len(dates) - 8} more)" if len(dates) > 8 else "")
+                print(f"    {table:<15s} {reason:<20s} {n:>4} row(s) on {len(dates)} date(s): {shown}")
 
-        print("\n  By table and reason:")
-        for (table, reason), n in sorted(Counter((b.table, b.reason) for b in bad).items()):
-            dates = sorted({str(b.when) for b in bad if b.table == table and b.reason == reason})
-            shown = ", ".join(dates[:8]) + (f" (+{len(dates) - 8} more)" if len(dates) > 8 else "")
-            print(f"    {table:<15s} {reason:<20s} {n:>4} row(s) on {len(dates)} date(s): {shown}")
+            if purge:
+                deleted = purge_bad_rows(session, bad)
+                print(f"\n  Purged {deleted} row(s). Run `python main.py ingest` to re-fetch them.")
+            else:
+                print("\n  Re-run with --purge to delete these rows.")
+                failed = True
 
-        if purge:
-            deleted = purge_bad_rows(session, bad)
-            print(f"\n  Purged {deleted} row(s). Run `python main.py ingest` to re-fetch them.\n")
-            return
-        print("\n  Re-run with --purge to delete these rows.\n")
-        sys.exit(1)
+        if not split_issues:
+            print("\n  Split check OK: no unadjusted splits.\n")
+        else:
+            print(f"\n  {len(split_issues)} unadjusted split(s): history before the ex-date is not re-adjusted:")
+            for i in split_issues:
+                print(f"    {i.ticker:<16s} ex {i.ex_date}  factor {i.factor:g}  prev close / ex open = {i.observed_ratio:.3f}")
+            print("\n  --purge does not touch these. Re-adjusting history is a human decision.\n")
+            failed = True
+
+        if failed:
+            sys.exit(1)
     finally:
         session.close()
 

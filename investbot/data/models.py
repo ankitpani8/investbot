@@ -97,6 +97,20 @@ class PriceIntraday(Base):
     volume = Column(Integer)
 
 
+class CorporateAction(Base):
+    """Dividends and splits, stored point-in-time by ex-date (asset-class agnostic)."""
+    __tablename__ = "corporate_actions"
+    __table_args__ = (UniqueConstraint("asset_id", "ex_date", "action_type"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    ex_date = Column(Date, nullable=False)
+    action_type = Column(String, nullable=False)                # 'dividend' | 'split'
+    value = Column(Float, nullable=False)                       # dividend: gross cash per share; split: new/old shares (1:2 and a 1:1 bonus are both 2.0)
+    source = Column(String)                                     # 'yfinance'
+    fetched_at = Column(DateTime)                               # UTC
+
+
 # ──────────────────────────────────────────────────────────
 # §4.3 — Fundamental Data: Equity Financials
 # ──────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ Includes retry logic, gap detection, and a trailing-window upsert
 import logging
 import time as time_module
 from dataclasses import dataclass, field
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -20,7 +20,7 @@ from investbot.config.settings import (
     INTRADAY_INTERVAL, INTRADAY_PERIOD, INTRADAY_REFRESH_DAYS,
     MAX_RETRIES, RETRY_DELAY_SECONDS, TIMEZONE,
 )
-from investbot.data.models import Asset, PriceDaily, PriceIntraday
+from investbot.data.models import Asset, Base, CorporateAction, PriceDaily, PriceIntraday
 from investbot.data.quality import validate_price_row
 
 logger = logging.getLogger(__name__)
@@ -40,8 +40,12 @@ def _retry(func, *args, max_retries=MAX_RETRIES, delay=RETRY_DELAY_SECONDS, **kw
                 raise
 
 
-def _download_prices(ticker: str, period: str, interval: str) -> pd.DataFrame:
-    """Download price data from yfinance with retry."""
+def _download_prices(ticker: str, period: str, interval: str, actions: bool = False) -> pd.DataFrame:
+    """
+    Download price data from yfinance with retry.
+
+    `actions=True` adds the `Dividends` and `Stock Splits` columns to the same request.
+    """
     def _do_download():
         data = yf.download(
             ticker,
@@ -49,6 +53,7 @@ def _download_prices(ticker: str, period: str, interval: str) -> pd.DataFrame:
             interval=interval,
             progress=False,
             auto_adjust=False,
+            actions=actions,
             timeout=30,
         )
         if data.empty:
@@ -73,7 +78,7 @@ def ingest_daily_prices(session: Session, asset: Asset, now: datetime | None = N
     logger.info(f"Ingesting daily prices for {ticker}...")
 
     try:
-        df = _download_prices(ticker, DAILY_PERIOD, "1d")
+        df = _download_prices(ticker, DAILY_PERIOD, "1d", actions=True)
     except Exception as e:
         logger.error(f"Failed to download daily prices for {ticker}: {e}")
         return 0
@@ -110,6 +115,9 @@ def ingest_daily_prices(session: Session, asset: Asset, now: datetime | None = N
         new_row=lambda when, f: PriceDaily(asset_id=asset.id, date=when, **f),
     )
     _log_counts(ticker, "daily", counts, skipped, "unfinished session")
+
+    action_counts = _upsert_actions(session, asset, df, now_ist.astimezone(timezone.utc))
+    _log_counts(ticker, "actions", action_counts, 0, "")
     return counts.inserted + counts.updated
 
 
@@ -176,6 +184,7 @@ def ingest_all_prices(session: Session, asset_type: str = "stock"):
     """
     Ingest daily + intraday prices for all active assets of a given type.
     """
+    Base.metadata.create_all(session.get_bind())    # corporate_actions may be missing on an existing DB
     assets = session.query(Asset).filter_by(is_active=True, asset_type=asset_type).all()
     logger.info(f"Starting price ingestion for {len(assets)} {asset_type} assets")
 
@@ -235,6 +244,64 @@ class UpsertCounts:
     updated: int = 0
     unchanged: int = 0
     rejected: list[tuple] = field(default_factory=list)   # (key, reason)
+
+
+_ACTION_COLUMNS = (("Dividends", "dividend"), ("Stock Splits", "split"))
+
+
+def _upsert_actions(session: Session, asset: Asset, df: pd.DataFrame, now: datetime) -> UpsertCounts:
+    """
+    Upsert every non-zero dividend and split row of a daily download.
+
+    Unlike OHLCV there is no refresh window: actions are sparse, and yfinance
+    re-states dividend amounts after a later split, so any row may change. An
+    existing (ex_date, action_type) row gets its `value` and `fetched_at`
+    updated only when the value differs. Rows dated after today (IST) are
+    skipped. `now` is the fetch time; a naive value is taken to be UTC.
+    """
+    counts = UpsertCounts()
+    today = _now_ist(now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now).date()
+    fetched_at = (now if now.tzinfo is None else now.astimezone(timezone.utc)).replace(tzinfo=None)
+
+    incoming: dict[tuple[date, str], float] = {}
+    for column, action_type in _ACTION_COLUMNS:
+        if column not in df.columns:
+            continue
+        for idx, raw in df[column].items():
+            value = _safe_float(raw)
+            if value is None or value <= 0:
+                continue
+            ex_date = idx.date() if hasattr(idx, "date") else idx
+            if ex_date > today:
+                continue
+            incoming[(ex_date, action_type)] = value       # a duplicated index keeps the last row
+    if not incoming:
+        return counts
+
+    stored = {
+        (r.ex_date, r.action_type): r
+        for r in session.execute(
+            select(CorporateAction).where(CorporateAction.asset_id == asset.id)
+        ).scalars()
+    }
+    for (ex_date, action_type), value in incoming.items():
+        row = stored.get((ex_date, action_type))
+        if row is None:
+            session.add(CorporateAction(
+                asset_id=asset.id, ex_date=ex_date, action_type=action_type,
+                value=value, source="yfinance", fetched_at=fetched_at,
+            ))
+            counts.inserted += 1
+        elif row.value != value:
+            row.value = value
+            row.fetched_at = fetched_at
+            counts.updated += 1
+        else:
+            counts.unchanged += 1
+
+    if counts.inserted or counts.updated:
+        session.commit()
+    return counts
 
 
 def _now_ist(now: datetime | None) -> datetime:
