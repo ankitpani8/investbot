@@ -57,7 +57,8 @@ Statistics (all on the harness's out-of-sample dates)
                        The same test on the null panel is shown as a sanity
                        check (not in BH).
     Rank association   ``metrics.daily_ic`` (>= ``metrics.MIN_NAMES`` names),
-                       summarised with ``metrics.ic_summary`` at lag H.
+                       summarised with ``metrics.ic_summary`` at lag H. Also run on
+                       the null panel as a sanity check (not in BH).
     Calibration        HIT_H: on trend/range bars (chaos excluded), the per-date
                        percentile rank of FWD_ER_H among those names scaled to
                        [-0.5, 0.5], times +1 for trend and -1 for range. Daily
@@ -519,6 +520,7 @@ class StudyResult:
     tests: pd.DataFrame                      # every BH-tested row (H1-H5)
     group_means: pd.DataFrame                # time-mean of each label's per-date mean
     null_conditional: pd.DataFrame           # the H1-H3 tests on the null panel
+    null_rank: pd.DataFrame                  # the H4 tests on the null panel
     hit_quintiles: pd.DataFrame              # span, horizon, Q1..Q5 mean HIT
     churn: pd.DataFrame                      # span: churn stats
     notes: list[str] = field(default_factory=list)
@@ -610,12 +612,13 @@ def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame
     tests["q"] = bh_adjust(tests["p"].to_numpy(dtype=np.float64))
     tests["verdict"] = [verdict(r) for _, r in tests.iterrows()]
     null_cond, _ = conditional_tests(null_features, null_targets, oos, splits)
+    null_rank = rank_tests(null_features, null_targets, oos, splits)
     return StudyResult(
         splits=splits, oos=oos,
         base_rates_real=label_base_rates(features["REGIME"], oos),
         base_rates_null=label_base_rates(null_features["REGIME"], oos),
         hurst_real=distribution(features[HURST_COL], oos),
         hurst_null=distribution(null_features[HURST_COL], oos),
-        tests=tests, group_means=means, null_conditional=null_cond,
+        tests=tests, group_means=means, null_conditional=null_cond, null_rank=null_rank,
         hit_quintiles=quint, churn=churn,
     )

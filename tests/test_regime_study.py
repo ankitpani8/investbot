@@ -283,8 +283,9 @@ def test_verdict_rule():
     assert rs.verdict({**base, "mean": -0.1, "q": 0.5}) == "not supported"
 
 
-def test_run_study_end_to_end_synthetic():
-    """The whole pipeline on a small synthetic universe (shape and sanity only)."""
+@pytest.fixture(scope="module")
+def synthetic_study():
+    """The whole pipeline on a small synthetic universe."""
     real, null = {}, {}
     for k in range(12):
         bars = _bars(900, seed=100 + k, phi=0.1 * (k % 3))
@@ -294,14 +295,43 @@ def test_run_study_end_to_end_synthetic():
     tg = rs.to_wide({t: y for t, (_, y) in real.items()})
     nf = rs.to_wide({t: f for t, (f, _) in null.items()})
     ny = rs.to_wide({t: y for t, (_, y) in null.items()})
-    res = rs.run_study(feats, tg, nf, ny)
+    return rs.run_study(feats, tg, nf, ny)
+
+
+def test_run_study_end_to_end_synthetic(synthetic_study):
+    res = synthetic_study
     assert len(res.splits) >= 1 and len(res.oos) > 0
     n_cond = 2 * 3 + 1 + 2 + 2
     n_rank = 2 * 3 + 2 * 4
     n_cal = 2 * len(rs.CONFIDENCE_SPANS)
     assert len(res.tests) == n_cond + n_rank + n_cal
+    assert len(res.null_conditional) == n_cond and len(res.null_rank) == n_rank
     q = res.tests["q"]
     assert (q.isna() | q.between(0, 1)).all() and q.notna().sum() >= 20
     assert set(res.tests["verdict"]) <= {"supported", "not supported", "wrong sign"}
     assert len(res.churn) == len(rs.CONFIDENCE_SPANS)
     assert res.base_rates_real["ticker"].iloc[-1] == "ALL"
+
+
+def test_runner_renders_and_never_overwrites(synthetic_study, tmp_path):
+    from datetime import date
+
+    from scripts import regime_study as runner
+
+    d = date(2026, 10, 18)
+    first = runner.report_paths(tmp_path, tmp_path, d)
+    assert first[0].name == "regime_study_20261018.md"
+    first[0].write_text("x")
+    second = runner.report_paths(tmp_path, tmp_path, d)
+    assert second[0].name == "regime_study_20261018_b.md"
+    assert second[1].name == "regime_study_tests_20261018_b.csv"
+
+    info = {"n_assets": 12, "skipped": [], "n_rows": 10800,
+            "first": synthetic_study.oos[0], "last": synthetic_study.oos[-1]}
+    text = runner.render_report(synthetic_study, info, d, elapsed_s=1.0, rss_mb=100.0,
+                                git_hash="abc1234", end=None)
+    for heading in ("## Setup", "## Label base rates (real vs null)", "## Conditional means",
+                    "## Rank association", "## Confidence calibration by span",
+                    "## Verdict per pre-registered hypothesis", "## Options for Ankit"):
+        assert heading in text
+    assert "SCORER_VERSION" in text and "abc1234" in text and "peak RSS" in text
