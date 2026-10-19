@@ -36,7 +36,9 @@ Held portfolio (``held_*``)
     the open-to-open label ``FWD_OO_RET_h`` (open[t+1] -> open[t+1+h]), so
     consecutive periods tile the timeline and compound into an equity curve:
     CAGR (gross, net, universe), volatility, max drawdown and information
-    ratio against the universe. No risk-free rate.
+    ratio against the universe, plus the §9.1 risk and trade-quality KPIs from
+    ``performance.py`` (Sharpe against ``RISK_FREE_RATE_ANNUAL``, Sortino,
+    Calmar, drawdown duration, VaR / CVaR per holding period, win rates).
 
 Pooled IC (``pooled_*``)
     For thin subsets (e.g. one regime) where few dates reach ``MIN_NAMES``:
@@ -50,6 +52,14 @@ import math
 import numpy as np
 import pandas as pd
 
+from investbot.evaluation.performance import (
+    calmar,
+    drawdown_stats,
+    sharpe,
+    sortino,
+    trade_stats,
+    var_cvar,
+)
 from investbot.evaluation.stats import newey_west_se, newey_west_tstat, normal_pvalue, spearman
 
 #: Fewer names than this on a date: the date is skipped.
@@ -77,6 +87,9 @@ def statutory_round_trip_cost(trade_value: float = REFERENCE_TRADE_VALUE) -> flo
 #: ≈ 0.32%, inside the master plan's §2.8 "~0.25-0.35%".
 ROUND_TRIP_COST: float = statutory_round_trip_cost() + 2 * SLIPPAGE_PER_SIDE
 TRADING_DAYS: int = 252
+#: Annual risk-free rate for Sharpe and Sortino. A constant placeholder for the
+#: 91-day T-bill (master plan §9.1), not a dated series; see docs/DECISIONS_PENDING.md.
+RISK_FREE_RATE_ANNUAL: float = 0.065
 
 
 def joint_mask(S: pd.DataFrame, Y: pd.DataFrame, min_names: int = MIN_NAMES):
@@ -220,7 +233,11 @@ def long_only_costs(members: pd.DataFrame, Y: pd.DataFrame, horizon: int,
 
 
 HELD_KEYS: tuple[str, ...] = ("n_periods", "turnover", "cagr_gross", "cagr_net", "cagr_universe",
-                              "vol_ann_net", "max_drawdown_net", "info_ratio_net")
+                              "vol_ann_net", "max_drawdown_net", "info_ratio_net",
+                              "sharpe_net", "sharpe_universe", "sortino_net", "calmar_net",
+                              "max_dd_duration_days_net", "max_dd_recovered_net",
+                              "max_drawdown_universe", "var95_net", "cvar95_net",
+                              "period_win_rate_net", "excess_win_rate_net")
 
 
 def held_periods(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
@@ -271,8 +288,23 @@ def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
         info_ratio_net    mean / sd of (net - universe) period returns * sqrt(252 / h)
         turnover          mean turnover after the first rebalance
 
-    No risk-free rate is used: the comparison is against the equal-weight
-    universe over the same periods, not against cash.
+    The keys after ``info_ratio_net`` come from ``performance.py`` (n >= 2 periods,
+    else NaN), with ``periods_per_year = 252 / h`` and ``RISK_FREE_RATE_ANNUAL``:
+
+        sharpe_net / sharpe_universe  annualised Sharpe against the risk-free rate
+        sortino_net                   annualised Sortino, target = the risk-free rate
+        calmar_net                    cagr_net / |max_drawdown_net|
+        max_dd_duration_days_net      periods of the longest-to-recover worst drawdown
+                                      (peak to recovery, or to the end) * h bars
+        max_dd_recovered_net          1.0 if the worst drawdown got back to its peak, else 0.0
+        max_drawdown_universe         as max_drawdown_net, for the universe curve
+        var95_net / cvar95_net        95% historical VaR / CVaR of the net period
+                                      returns, positive losses **per holding period of h bars**
+        period_win_rate_net           share of periods with net > 0
+        excess_win_rate_net           share of periods with net - universe > 0
+
+    The IR, vol and CAGR use no risk-free rate: they compare against the
+    equal-weight universe over the same periods, not against cash.
     """
     p = held_periods(members, Y_oo, horizon, cost)
     n = len(p)
@@ -296,6 +328,23 @@ def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
         out["vol_ann_net"] = float(net.std(ddof=1) * scale)
         sd = float(active.std(ddof=1))
         out["info_ratio_net"] = float(active.mean() / sd * scale) if sd > 0 else math.nan
+        univ = p["universe"].to_numpy()
+        per_year = TRADING_DAYS / horizon
+        dd = drawdown_stats(net)
+        var, cvar = var_cvar(net, 0.95)
+        out.update({
+            "sharpe_net": sharpe(net, per_year, RISK_FREE_RATE_ANNUAL),
+            "sharpe_universe": sharpe(univ, per_year, RISK_FREE_RATE_ANNUAL),
+            "sortino_net": sortino(net, per_year, RISK_FREE_RATE_ANNUAL),
+            "calmar_net": calmar(out["cagr_net"], out["max_drawdown_net"]),
+            "max_dd_duration_days_net": dd["max_dd_duration"] * horizon,
+            "max_dd_recovered_net": float(dd["max_dd_recovered"]),
+            "max_drawdown_universe": drawdown_stats(univ)["max_drawdown"],
+            "var95_net": var,
+            "cvar95_net": cvar,
+            "period_win_rate_net": trade_stats(net)["win_rate"],
+            "excess_win_rate_net": trade_stats(active)["win_rate"],
+        })
     return out
 
 

@@ -54,6 +54,7 @@ from investbot.evaluation.metrics import (
     MIN_NAMES,
     POOLED_MIN_NAMES,
     REFERENCE_TRADE_VALUE,
+    RISK_FREE_RATE_ANNUAL,
     ROUND_TRIP_COST,
     SLIPPAGE_PER_SIDE,
     statutory_round_trip_cost,
@@ -213,6 +214,22 @@ def _pct(x) -> str:
     return _f(x * 100 if x is not None and np.isfinite(x) else math.nan, "{:+.2f}%")
 
 
+def _dd_days_text(days, recovered) -> str:
+    """Drawdown duration in days; ``*`` marks a worst drawdown that had not recovered by the end."""
+    if days is None or not np.isfinite(days):
+        return "–"
+    return f"{int(days)}" + ("" if recovered == 1.0 else "*")
+
+
+def with_dd_days_text(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` plus the ``held_dd_days_text`` column used by the "Held portfolio" table."""
+    if "held_max_dd_duration_days_net" not in df:
+        return df.assign(held_dd_days_text="–")
+    return df.assign(held_dd_days_text=[
+        _dd_days_text(d, rec) for d, rec in zip(df["held_max_dd_duration_days_net"],
+                                                df["held_max_dd_recovered_net"])])
+
+
 def _table(df: pd.DataFrame, cols: list[tuple[str, str, callable]]) -> str:
     """Markdown table: cols = [(header, column, formatter)]."""
     if df.empty:
@@ -255,6 +272,12 @@ _HELD_COLS = [
     ("CAGR universe", "held_cagr_universe", _pct), ("vol /yr", "held_vol_ann_net", _pct),
     ("max DD", "held_max_drawdown_net", _pct),
     ("IR vs universe", "held_info_ratio_net", lambda x: _f(x, "{:+.2f}")),
+    ("Sharpe net", "held_sharpe_net", lambda x: _f(x, "{:+.2f}")),
+    ("Sharpe univ.", "held_sharpe_universe", lambda x: _f(x, "{:+.2f}")),
+    ("Sortino", "held_sortino_net", lambda x: _f(x, "{:+.2f}")),
+    ("Calmar", "held_calmar_net", lambda x: _f(x, "{:+.2f}")),
+    ("max DD days", "held_dd_days_text", _s),
+    ("CVaR95 /period", "held_cvar95_net", lambda x: _f(x * 100, "{:.2f}%")),
 ]
 _SPLIT_COLS = [
     ("signal", "signal", _s), ("h", "horizon", _int), ("subset", "subset", _s),
@@ -621,6 +644,9 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     w(f"- Multiple testing: Benjamini–Hochberg over all {len(head)} signal × horizon tests. "
       f"**Promising** = BH q < {PROMISING_Q:.2f} and the IC sign holds in ≥ "
       f"{PROMISING_SIGN_SHARE:.0%} of test blocks.")
+    w(f"- Risk-free rate for Sharpe and Sortino: {RISK_FREE_RATE_ANNUAL:.2%} a year, a constant "
+      "placeholder for the 91-day T-bill (master plan §9.1), not a dated series. VaR/CVaR are "
+      "per holding period of h bars.")
     w(f"- Costs: round trip {ROUND_TRIP_COST:.3%} of traded value = statutory charges and "
       f"brokerage from `config/tax_regimes.py` on a ₹{REFERENCE_TRADE_VALUE / 1e5:g} lakh order "
       f"({statutory_round_trip_cost():.3%}) + slippage {SLIPPAGE_PER_SIDE:.3%} per side.")
@@ -683,10 +709,17 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       f"{ROUND_TRIP_COST:.3%} per period, compounded. CAGR over the invested periods "
       "(n × h / 252 years); vol = sd of net period returns × √(252 / h); max DD = worst "
       "peak-to-trough of the compounded net curve; IR = mean / sd of (net − universe) period "
-      "returns × √(252 / h). No risk-free rate: the benchmark is the equal-weight universe over "
-      "the same periods. The OOS blocks are contiguous, so the curve spans the whole OOS window. "
+      "returns × √(252 / h). CAGR, vol and IR use no risk-free rate: the benchmark is the "
+      "equal-weight universe over the same periods. The OOS blocks are contiguous, so the curve spans the whole OOS window. "
       "No taxes.\n")
-    w(_table(_order(head, portfolio_names), _HELD_COLS))
+    w(_table(with_dd_days_text(_order(head, portfolio_names)), _HELD_COLS))
+    w("Risk-adjusted columns use the periods above: Sharpe and Sortino are annualised "
+      "(× √(252 / h)) against the risk-free rate in the Setup (Sortino's downside target is that "
+      "rate), Calmar = CAGR net / |max DD|, max DD days = bars from the peak before the worst "
+      "drawdown until the curve is back at it (`*` = not recovered by the end of the window, "
+      "counted to the end), CVaR95 = mean loss of the worst 5% of holding periods (a loss over "
+      "h bars, not a daily one). These are cost-only signal portfolios without taxes: the §9.2 "
+      "go/no-go thresholds apply to the full after-tax strategy, so no verdict is given here.\n")
 
     w(dividend_section(table, info, ["TECH_SCORE", *families, *BASELINE_COLUMNS]))
 

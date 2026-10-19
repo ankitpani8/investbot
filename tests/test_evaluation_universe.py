@@ -13,6 +13,7 @@ import pytest
 
 from investbot.evaluation.evaluate import evaluate, headline
 from investbot.evaluation.labels import HORIZONS, PRICE_STEMS, TR_STEMS, label_columns
+from investbot.evaluation.metrics import HELD_KEYS
 
 START = "2023-01-02"
 N_BARS = 330
@@ -117,7 +118,10 @@ GOLDEN_PANEL = {"shape": [580, 44], "feat_sum": -2967.6614279902037,
 
 
 def eval_fingerprint(table: pd.DataFrame) -> dict:
-    num = table.select_dtypes(include=[np.number]).to_numpy(dtype=np.float64)
+    # the golden sum predates the task-270 KPI columns; those are pinned in test_evaluation_performance
+    new = {f"held_{k}" for k in HELD_KEYS[8:]}
+    num = table.drop(columns=list(new & set(table.columns))).select_dtypes(
+        include=[np.number]).to_numpy(dtype=np.float64)
     h = headline(table).set_index(["signal", "horizon"])
     out = {"n_rows": len(table), "sum": float(np.nansum(np.where(np.isfinite(num), num, 0.0)))}
     for hz in (1, 5):
