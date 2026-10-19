@@ -249,6 +249,8 @@ _BOOT_INTERVALS = (
     ("held_sharpe_text", "held_sharpe_net_lo", "held_sharpe_net_hi", lambda x: _f(x, "{:+.2f}")),
     ("held_cagr_text", "held_cagr_net_lo", "held_cagr_net_hi", _pct),
     ("held_excess_text", "held_excess_cagr_lo", "held_excess_cagr_hi", _pct),
+    ("held_sortino_text", "held_sortino_net_lo", "held_sortino_net_hi", lambda x: _f(x, "{:+.2f}")),
+    ("held_calmar_text", "held_calmar_net_lo", "held_calmar_net_hi", lambda x: _f(x, "{:+.2f}")),
 )
 
 
@@ -318,6 +320,8 @@ _BOOT_COLS = [
     ("Sharpe net [lo, hi]", "held_sharpe_text", _s),
     ("CAGR net [lo, hi]", "held_cagr_text", _s),
     ("net − universe CAGR [lo, hi]", "held_excess_text", _s),
+    ("Sortino net [lo, hi]", "held_sortino_text", _s),
+    ("Calmar net [lo, hi]", "held_calmar_text", _s),
 ]
 _SPLIT_COLS = [
     ("signal", "signal", _s), ("h", "horizon", _int), ("subset", "subset", _s),
@@ -775,7 +779,7 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       f"{BOOTSTRAP_MIN_PERIODS} periods. The intervals are **per row and not BH-adjusted**: "
       f"with this many rows, about {1 - BOOTSTRAP_LEVEL:.0%} of the intervals exclude 0 by "
       "chance even when nothing works, so the Benjamini–Hochberg verdict above stays the "
-      "headline.\n")
+      "headline. Calmar intervals at h = 20 rest on about 34 periods and are descriptive.\n")
 
     w(dividend_section(table, info, ["TECH_SCORE", *families, *BASELINE_COLUMNS]))
 

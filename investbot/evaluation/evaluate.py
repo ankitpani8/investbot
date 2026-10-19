@@ -32,6 +32,13 @@ Every row with quintile metrics also has the open-to-open held portfolio
 (``held_*``, from ``FWD_TR_OO_RET_h``, or ``FWD_OO_RET_h`` on the "price" rows
 and when the primary return is "price") next to the open→close ``lo_*`` check.
 
+Bootstrap intervals: the held-portfolio block-bootstrap intervals (``held_*_lo/_hi``,
+``held_ir_net_share_pos``, ``held_boot_mean_block``) are computed only on the rows listed in
+``BOOTSTRAP_ROWS``, the (label, subset) pairs the report reads (today the headline rows,
+"open" / "oos"). Every other row passes ``bootstrap=False`` and carries NaN there; all other
+columns are unchanged. A report section that starts reading intervals on other rows must add
+its (label, subset) to ``BOOTSTRAP_ROWS``.
+
 Universe masking: when the features carry ``IN_UNIVERSE`` (``universe="index"``),
 every signal cell outside the universe on its date becomes NaN (``where``, no
 dropna) before IC, buckets and portfolios, baselines included, and so does the
@@ -67,6 +74,9 @@ from investbot.evaluation.walkforward import Split, oos_dates, walk_forward_spli
 PROMISING_Q: float = 0.10
 #: Share of test blocks in which the IC sign must hold.
 PROMISING_SIGN_SHARE: float = 0.70
+#: (label, subset) pairs whose held portfolio gets bootstrap intervals; the report's
+#: "Held portfolio: bootstrap intervals" table reads the headline rows and nothing else does.
+BOOTSTRAP_ROWS: tuple[tuple[str, str], ...] = (("open", "oos"),)
 #: Column whose cross-section defines the evaluation calendar (first usable date).
 CALENDAR_COLUMN: str = "TECH_SCORE"
 
@@ -174,16 +184,20 @@ def evaluate(
             Y = ys[("open", h)]
             Yo = ys[("oo", h)]
 
+            def boot(label, subset):
+                return (label, subset) in BOOTSTRAP_ROWS
+
             def add(subset, label, metrics):
                 rows.append({"signal": sig, "label": label, "horizon": h,
                              "subset": subset, **metrics})
 
             add("oos", "open", signal_metrics(S.loc[oos], Y.loc[oos], h, min_names, cost,
-                                              Yo.loc[oos]))
-            add("all", "open", signal_metrics(S, Y, h, min_names, cost, Yo))
+                                              Yo.loc[oos], boot("open", "oos")))
+            add("all", "open", signal_metrics(S, Y, h, min_names, cost, Yo,
+                                              boot("open", "all")))
             Yc = ys[("close", h)]
             add("oos", "close", signal_metrics(S.loc[oos], Yc.loc[oos], h, min_names, cost,
-                                               Yo.loc[oos]))
+                                               Yo.loc[oos], boot("close", "oos")))
 
             ic = daily_ic(S, Y, min_names)
             for sp in splits:
@@ -191,19 +205,22 @@ def evaluate(
             if compare:
                 Yp, Yop = ys[(("price", "open"), h)], ys[(("price", "oo"), h)]
                 add("oos", COMPARISON_RETURN,
-                    signal_metrics(S.loc[oos], Yp.loc[oos], h, min_names, cost, Yop.loc[oos]))
+                    signal_metrics(S.loc[oos], Yp.loc[oos], h, min_names, cost, Yop.loc[oos],
+                                   boot(COMPARISON_RETURN, "oos")))
                 icp = daily_ic(S, Yp, min_names)
                 for sp in splits:
                     add(f"block:{sp.label}", COMPARISON_RETURN, ic_summary(icp.loc[sp.test], h))
             for code, name in REGIME_NAMES.items():
                 Sr = S.loc[oos].where(regime.loc[oos] == code)
                 add(f"regime:{name}", "open",
-                    {**signal_metrics(Sr, Y.loc[oos], h, min_names, cost, Yo.loc[oos]),
+                    {**signal_metrics(Sr, Y.loc[oos], h, min_names, cost, Yo.loc[oos],
+                                   boot("open", f"regime:{name}")),
                      **pooled_ic(Sr, Y.loc[oos], h)})
             for yr in years:
                 d = oos[oos.year == yr]
                 add(f"year:{yr}", "open",
-                    signal_metrics(S.loc[d], Y.loc[d], h, min_names, cost, Yo.loc[d]))
+                    signal_metrics(S.loc[d], Y.loc[d], h, min_names, cost, Yo.loc[d],
+                                   boot("open", f"year:{yr}")))
 
     table = pd.DataFrame(rows)
     if table.empty:

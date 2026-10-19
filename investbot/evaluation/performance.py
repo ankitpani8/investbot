@@ -380,3 +380,33 @@ def boot_excess_cagr(years: float):
     def stat(a: np.ndarray) -> np.ndarray:
         return _boot_cagr_col(a, 0, years) - _boot_cagr_col(a, 1, years)
     return stat
+
+
+def boot_sortino(periods_per_year: float, rf_annual: float):
+    """Annualised Sortino of column 0 per draw (as ``sortino``): excess = ``r - per_period_rf``,
+    downside deviation = ``sqrt(mean(min(excess, 0) ** 2))`` over **all** periods of the draw,
+    NaN where it is 0."""
+    rf = per_period_rf(rf_annual, periods_per_year)
+    scale = math.sqrt(periods_per_year)
+
+    def stat(a: np.ndarray) -> np.ndarray:
+        x = a[:, :, 0] - rf
+        dd = np.sqrt(np.mean(np.minimum(x, 0.0) ** 2, axis=1))
+        flat = ~(dd > 0.0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(flat, np.nan, x.mean(axis=1) / np.where(flat, 1.0, dd) * scale)
+    return stat
+
+
+def boot_calmar(years: float):
+    """Calmar of column 0 per draw: ``cagr / |max_drawdown|`` (as ``calmar``), CAGR as in
+    ``boot_cagr``, max drawdown of ``cumprod(r_[1, 1 + r])`` along axis 1; NaN where it is 0."""
+    def stat(a: np.ndarray) -> np.ndarray:
+        r = a[:, :, 0]
+        curve = np.cumprod(np.concatenate([np.ones((r.shape[0], 1)), 1.0 + r], axis=1), axis=1)
+        max_dd = (curve / np.maximum.accumulate(curve, axis=1) - 1.0).min(axis=1)
+        flat = ~(max_dd < 0.0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(flat, np.nan,
+                            _boot_cagr_col(a, 0, years) / np.where(flat, 1.0, np.abs(max_dd)))
+    return stat

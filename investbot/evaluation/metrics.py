@@ -39,9 +39,11 @@ Held portfolio (``held_*``)
     ratio against the universe, plus the §9.1 risk and trade-quality KPIs from
     ``performance.py`` (Sharpe against ``RISK_FREE_RATE_ANNUAL``, Sortino,
     Calmar, drawdown duration, VaR / CVaR per holding period, win rates) and
-    90% stationary block-bootstrap intervals for IR, Sharpe net, CAGR net and
-    net − universe CAGR (``performance.bootstrap_interval``, per row, not
-    adjusted for multiple comparisons).
+    90% stationary block-bootstrap intervals for IR, Sharpe net, CAGR net,
+    net − universe CAGR, Sortino net and Calmar net (``performance.bootstrap_intervals``,
+    per row, not adjusted for multiple comparisons). The harness asks for them only
+    on the rows its report reads (``evaluate.BOOTSTRAP_ROWS``); ``bootstrap=False``
+    leaves them NaN and runs no resampling.
 
 Pooled IC (``pooled_*``)
     For thin subsets (e.g. one regime) where few dates reach ``MIN_NAMES``:
@@ -58,9 +60,11 @@ import pandas as pd
 from investbot.evaluation.performance import (
     BOOTSTRAP_MIN_PERIODS,
     boot_cagr,
+    boot_calmar,
     boot_excess_cagr,
     boot_info_ratio,
     boot_sharpe,
+    boot_sortino,
     bootstrap_intervals,
     calmar,
     drawdown_stats,
@@ -249,7 +253,8 @@ HELD_KEYS: tuple[str, ...] = ("n_periods", "turnover", "cagr_gross", "cagr_net",
                               "period_win_rate_net", "excess_win_rate_net",
                               "boot_mean_block", "ir_net_lo", "ir_net_hi", "ir_net_share_pos",
                               "sharpe_net_lo", "sharpe_net_hi", "cagr_net_lo", "cagr_net_hi",
-                              "excess_cagr_lo", "excess_cagr_hi")
+                              "excess_cagr_lo", "excess_cagr_hi",
+                              "sortino_net_lo", "sortino_net_hi", "calmar_net_lo", "calmar_net_hi")
 
 
 def held_periods(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
@@ -286,7 +291,7 @@ def _cagr(r: np.ndarray, years: float) -> float:
 
 
 def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
-                   cost: float = ROUND_TRIP_COST) -> dict[str, float]:
+                   cost: float = ROUND_TRIP_COST, bootstrap: bool = True) -> dict[str, float]:
     """
     Compounded top-bucket portfolio held open-to-open between rebalances.
 
@@ -328,6 +333,11 @@ def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
         sharpe_net_lo / _hi                interval of sharpe_net
         cagr_net_lo / _hi                  interval of cagr_net
         excess_cagr_lo / _hi               interval of cagr_net - cagr_universe
+        sortino_net_lo / _hi               interval of sortino_net
+        calmar_net_lo / _hi                interval of calmar_net (NaN draws without a drawdown)
+
+    All six statistics share one draw. With ``bootstrap=False`` these keys stay NaN
+    and no resampling runs; every other key is unchanged.
     """
     p = held_periods(members, Y_oo, horizon, cost)
     n = len(p)
@@ -368,13 +378,15 @@ def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
             "period_win_rate_net": trade_stats(net)["win_rate"],
             "excess_win_rate_net": trade_stats(active)["win_rate"],
         })
-    if n >= BOOTSTRAP_MIN_PERIODS:
+    if bootstrap and n >= BOOTSTRAP_MIN_PERIODS:
         per_year = TRADING_DAYS / horizon
         boot = bootstrap_intervals(
             np.column_stack([net, p["universe"].to_numpy()]),
             {"ir": boot_info_ratio(scale),
              "sharpe": boot_sharpe(per_year, RISK_FREE_RATE_ANNUAL),
-             "cagr": boot_cagr(years), "excess": boot_excess_cagr(years)})
+             "cagr": boot_cagr(years), "excess": boot_excess_cagr(years),
+             "sortino": boot_sortino(per_year, RISK_FREE_RATE_ANNUAL),
+             "calmar": boot_calmar(years)})
         out.update({
             "boot_mean_block": boot["ir"]["mean_block"],
             "ir_net_lo": boot["ir"]["lo"], "ir_net_hi": boot["ir"]["hi"],
@@ -382,6 +394,8 @@ def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
             "sharpe_net_lo": boot["sharpe"]["lo"], "sharpe_net_hi": boot["sharpe"]["hi"],
             "cagr_net_lo": boot["cagr"]["lo"], "cagr_net_hi": boot["cagr"]["hi"],
             "excess_cagr_lo": boot["excess"]["lo"], "excess_cagr_hi": boot["excess"]["hi"],
+            "sortino_net_lo": boot["sortino"]["lo"], "sortino_net_hi": boot["sortino"]["hi"],
+            "calmar_net_lo": boot["calmar"]["lo"], "calmar_net_hi": boot["calmar"]["hi"],
         })
     return out
 
@@ -434,8 +448,10 @@ def pooled_ic(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
 
 def quintile_summary(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
                      min_names: int = MIN_NAMES, cost: float = ROUND_TRIP_COST,
-                     Y_oo: pd.DataFrame | None = None) -> dict[str, float]:
-    """Quintile means, spread, ``lo_*`` (open→close) and ``held_*`` (open→open, if ``Y_oo``)."""
+                     Y_oo: pd.DataFrame | None = None,
+                     bootstrap: bool = True) -> dict[str, float]:
+    """Quintile means, spread, ``lo_*`` (open→close) and ``held_*`` (open→open, if ``Y_oo``).
+    ``bootstrap=False`` leaves the held-portfolio intervals NaN."""
     buckets = quantile_buckets(S, Y, min_names)
     rets = bucket_returns(buckets, Y)
     spread = spread_series(buckets, rets)
@@ -449,7 +465,7 @@ def quintile_summary(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
     members = top_membership(buckets)
     out.update({f"lo_{k}": v for k, v in long_only_costs(members, Y, horizon, cost).items()})
     out["top_turnover"] = out.pop("lo_turnover")
-    held = (held_portfolio(members, Y_oo, horizon, cost) if Y_oo is not None
+    held = (held_portfolio(members, Y_oo, horizon, cost, bootstrap) if Y_oo is not None
             else dict.fromkeys(HELD_KEYS, math.nan))
     out.update({f"held_{k}": v for k, v in held.items() if k != "turnover"})
     return out
@@ -457,11 +473,13 @@ def quintile_summary(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
 
 def signal_metrics(S: pd.DataFrame, Y: pd.DataFrame, horizon: int,
                    min_names: int = MIN_NAMES, cost: float = ROUND_TRIP_COST,
-                   Y_oo: pd.DataFrame | None = None) -> dict[str, float]:
+                   Y_oo: pd.DataFrame | None = None,
+                   bootstrap: bool = True) -> dict[str, float]:
     """IC summary + quintile summary for one signal, label and horizon on the given rows.
 
     ``Y_oo`` is the matching ``FWD_OO_RET_h`` matrix for the held portfolio
     (``held_*`` keys are NaN without it). Buckets always come from ``Y``'s joint mask.
+    ``bootstrap=False`` leaves the held-portfolio bootstrap intervals NaN (no resampling).
     """
     return {**ic_summary(daily_ic(S, Y, min_names), horizon),
-            **quintile_summary(S, Y, horizon, min_names, cost, Y_oo)}
+            **quintile_summary(S, Y, horizon, min_names, cost, Y_oo, bootstrap)}
