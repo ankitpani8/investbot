@@ -1,7 +1,7 @@
 """
 Regime study runner: does the real-time regime label predict the ex-post regime?
 
-    python -m scripts.regime_study [--end YYYY-MM-DD] [--universe index|active]
+    python -m scripts.regime_study [--end YYYY-MM-DD] [--universe index|active] [--no-h6]
 
 Loads the stocks one at a time (``loader.load_daily_history``), computes the
 regime conditioning and the ex-post targets on the real bars and on the
@@ -26,6 +26,12 @@ for the index, else "active" with a warning, as ``main.py evaluate``)
               the same splits for the report's "Universe effect" table.
     "active"  today's active stocks, unmasked (the pre-260 study, with the
               survivorship caveat).
+
+H6 (task 330, on unless ``--no-h6``): the shuffled nulls of
+``regime_study.NULL_EXCESS_SEEDS[1:]`` are computed in the same one-asset-at-a-time
+pass, only the H6 columns kept, features masked like the other null features;
+the report gains the section "H6: real minus shuffled null (pre-registered)" and
+``tmp_output/regime_study_h6_<YYYYMMDD>.csv``. Every other table is unchanged.
 
 An existing report is never overwritten (``_b``, ``_c``, ... suffixes).
 No DB writes, no network.
@@ -109,9 +115,22 @@ def _wide4(real: dict, null: dict) -> tuple[dict, dict, dict, dict]:
             rs.to_wide({t: y for t, (_, y) in null.items()}))
 
 
+def extra_null_frames(bars: pd.DataFrame, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(features, targets) of one asset's shuffled null with ``seed``, only the
+    columns H6 reads (``rs.NULL_EXCESS_FEATURES`` / ``rs.NULL_EXCESS_TARGETS``)."""
+    f, y = rs.asset_study_frames(rs.shuffled_null_bars(bars, seed=seed))
+    return f[list(rs.NULL_EXCESS_FEATURES)], y[list(rs.NULL_EXCESS_TARGETS)]
+
+
+def _wide_pairs(by_seed: dict[int, dict]) -> list[tuple[dict, dict]]:
+    """{seed: {ticker: (f, y)}} -> [(features wide, targets wide)] in seed order."""
+    return [(rs.to_wide({t: f for t, (f, _) in frames.items()}),
+             rs.to_wide({t: y for t, (_, y) in frames.items()})) for frames in by_seed.values()]
+
+
 def build_study_panels(session, end: date | None = None, *, universe: str = "index",
                        index_code: str = INDEX_CODE, complete_from: date = COMPLETE_FROM,
-                       compare_active: bool = False):
+                       compare_active: bool = False, null_seeds: tuple[int, ...] = ()):
     """
     (features, targets, null features, null targets, info) as {column: date × ticker}.
 
@@ -124,6 +143,13 @@ def build_study_panels(session, end: date | None = None, *, universe: str = "ind
     four unmasked panels of today's active stocks (computed in the same pass).
     Assets with fewer than ``MIN_STUDY_BARS`` bars (or none) are skipped and
     listed; a member with no history is never filled.
+
+    ``null_seeds`` (H6: ``NULL_EXCESS_SEEDS[1:]``): for each seed, the shuffled null
+    of every asset in the same pass, only ``extra_null_frames`` columns, features
+    masked like the null features (targets never). Then ``info["null_excess_panels"]``
+    is [(features, targets) per seed] and, with ``compare_active``,
+    ``info["active_null_excess_panels"]`` the unmasked ones of the active stocks;
+    ``info["h6_s"]`` is the time spent on them. Without seeds ``info`` is unchanged.
     """
     from investbot.evaluation.loader import (
         active_tickers,
@@ -141,6 +167,9 @@ def build_study_panels(session, end: date | None = None, *, universe: str = "ind
 
     real, null = {}, {}
     comp_real, comp_null = {}, {}
+    extra = {s: {} for s in null_seeds}                  # H6: seed -> {ticker: (f, y)}
+    comp_extra = {s: {} for s in null_seeds}
+    h6_s = 0.0
     skipped, n_rows, member_rows = [], 0, 0
     first, last = None, None
     for ticker in tickers:
@@ -153,19 +182,29 @@ def build_study_panels(session, end: date | None = None, *, universe: str = "ind
         last = bars.index[-1] if last is None else max(last, bars.index[-1])
         f, y = rs.asset_study_frames(bars)
         nf, ny = rs.asset_study_frames(rs.shuffled_null_bars(bars))
+        t_h6 = time.monotonic()
+        ex = {s: extra_null_frames(bars, s) for s in null_seeds}
+        h6_s += time.monotonic() - t_h6
         if universe == "index":
             if compare_active and ticker in active_set:
                 comp_real[ticker], comp_null[ticker] = (f, y), (nf, ny)
+                for s, fy in ex.items():
+                    comp_extra[s][ticker] = fy
             member = point_in_time_membership(
                 membership_for(session, index_code, [ticker], bars.index), active_set,
                 complete_from)[ticker].to_numpy(dtype=bool)
             member_rows += int(member.sum())
             f, nf = mask_non_members(f, member), mask_non_members(nf, member)
+            ex = {s: (mask_non_members(ef, member), ey) for s, (ef, ey) in ex.items()}
         real[ticker], null[ticker] = (f, y), (nf, ny)
+        for s, fy in ex.items():
+            extra[s][ticker] = fy
         logger.info("regime study: %s done (%d bars)", ticker, len(bars))
     info = {"universe": universe, "n_assets": len(real), "skipped": skipped, "n_rows": n_rows,
             "first": first, "last": last}
     panels = _wide4(real, null)
+    if null_seeds:
+        info["null_excess_panels"] = _wide_pairs(extra)
     if universe == "index":
         calendar = (panels[0]["REGIME"].index if panels[0] else pd.DatetimeIndex([]))
         info.update(
@@ -183,8 +222,16 @@ def build_study_panels(session, end: date | None = None, *, universe: str = "ind
                     continue
                 comp_real[ticker] = rs.asset_study_frames(bars)
                 comp_null[ticker] = rs.asset_study_frames(rs.shuffled_null_bars(bars))
+                t_h6 = time.monotonic()
+                for s in null_seeds:
+                    comp_extra[s][ticker] = extra_null_frames(bars, s)
+                h6_s += time.monotonic() - t_h6
             info["active_panels"] = _wide4(comp_real, comp_null)
             info["n_active"] = len(comp_real)
+            if null_seeds:
+                info["active_null_excess_panels"] = _wide_pairs(comp_extra)
+    if null_seeds:
+        info["h6_s"] = h6_s
     return (*panels, info)
 
 
@@ -410,6 +457,89 @@ def _universe_effect_section(res: rs.StudyResult, compare: rs.StudyResult) -> li
     return out
 
 
+def h6_universe_effect(index_h6: pd.DataFrame, active_h6: pd.DataFrame) -> pd.DataFrame:
+    """The H6 rows of both universes side by side (``universe_effect`` plus null mean)."""
+    cols = [*_KEYS, "mean", "null_mean", "t_nw", "q", "block_share", "verdict"]
+    m = index_h6[cols].merge(active_h6[cols], on=_KEYS, how="left",
+                             suffixes=("_index", "_active"))
+    m["changed"] = m["verdict_index"] != m["verdict_active"]
+    return m
+
+
+_H6_COLS = [
+    ("test", "test", str), ("H", "horizon", _i), ("days", "n_days", _i),
+    ("real", "real", lambda x: _f(x, "{:+.4f}")),
+    ("null mean", "null_mean", lambda x: _f(x, "{:+.4f}")),
+    ("mean excess", "mean", lambda x: _f(x, "{:+.4f}")), ("NW t", "t_nw", _t),
+    ("BH q (H6)", "q", _q), ("blocks with expected sign", "block_share", lambda x: _f(x, "{:.2f}")),
+    ("verdict", "verdict", str),
+]
+
+H6_OPTIONS_PARAGRAPH = (
+    "**What H6 would mean for the pending regime decision** (DECISIONS_PENDING \"Regime "
+    "study: results\", options (a)–(d)); this report does not choose. If the H6 rank tests "
+    "are *supported*, REGIME_SCORE_CHAOS / VOL_RATIO rank future volatility beyond the shared-"
+    "denominator artefact (real volatility clustering), so the chaos side of the regime layer "
+    "carries a real, if small, signal: that is evidence for keeping it, as in (a), or for a "
+    "re-fit, as in (b), having a volatility target worth fitting, and it weakens (d)'s case "
+    "for a fixed blend as far as the chaos/volatility part is concerned. It says nothing about "
+    "trend vs range (H1) or confidence calibration (H5), which stay indistinguishable from the "
+    "null. If H6 is *not supported*, every supported result of this study is mechanical, no "
+    "regime input has passed it, and (d) (a fixed Black-Litterman ↔ risk-parity blend until a "
+    "regime signal passes) loses its only counter-evidence; (b) would then be fitting "
+    "thresholds to inputs with no demonstrated signal. A *wrong sign* would mean the real "
+    "association is weaker than the mechanical one. (c) (`CONFIDENCE_EMA_SPAN`) rests on the "
+    "calibration and churn tables, not on H6, either way.")
+
+
+def _h6_section(res: rs.StudyResult, compare: rs.StudyResult | None) -> list[str]:
+    h6 = res.h6.copy()
+    n_seeds = int(h6["n_seeds"].iloc[0]) if len(h6) else 0
+    out = ["## H6: real minus shuffled null (pre-registered)\n",
+           "Pre-registered separately (module docstring, task 330) because the H2/H4 volatility "
+           "tests have a large mechanical part: VOL_RATIO (and so REGIME_SCORE_CHAOS) and "
+           "FWD_VOLX share the REALVOL_250 denominator, and REALVOL_20 sits inside REALVOL_250's "
+           "window. Per OOS date, the real statistic (the H2 paired chaos − rest difference, or "
+           "the H4 daily IC) minus the mean of the same statistic over the shuffled-returns "
+           f"nulls of {n_seeds} seeds ({', '.join(map(str, rs.NULL_EXCESS_SEEDS[:n_seeds]))}; "
+           "the first is the null of the tables above) whose value on that date is finite; a "
+           "date with no finite null or real value is skipped. *real* and *null mean* are the "
+           "time means of the two statistics on the dates used (real = null mean + mean "
+           "excess). Newey-West t with lag H; expected sign > 0 for all six; Benjamini–Hochberg "
+           "over these 6 tests only (the H1–H5 q-values above are unchanged); same verdict "
+           "rule. Caveat: REALVOL_250 keeps these per-date statistics persistent for up to "
+           "~250 bars, longer than the Newey-West lag, so the t-stats are optimistic on ~700 "
+           "dates (on synthetic iid panels of ~480 OOS dates the lag-H t reached |t| ≈ 4 with a "
+           "true mean of 0; on ~2,500 dates it stayed below 2).\n"]
+    frames = [("index" if compare is not None else None, res)]
+    if compare is not None and len(compare.h6):
+        frames.append(("active", compare))
+    for label, r in frames:
+        t = r.h6.copy()
+        t["test"] = [f"{x['name']} → {x['target']}" for _, x in t.iterrows()]
+        t["real"] = t["mean"] + t["null_mean"]
+        if label:
+            out.append(f"**{label}** universe:\n")
+        out.append(_table(t, _H6_COLS))
+    counts = h6["verdict"].value_counts()
+    out.append("H6 verdicts" + (" (index)" if compare is not None else "") + ": "
+               + ", ".join(f"{counts.get(k, 0)} {k}"
+                           for k in ("supported", "not supported", "wrong sign")) + ".\n")
+    if compare is not None and len(compare.h6):
+        ue = h6_universe_effect(res.h6, compare.h6)
+        out.append("Universe effect (H6):\n")
+        for _, x in ue.iterrows():
+            out.append(f"- H6 {x['name']} → {x['target']}: index **{x['verdict_index']}** "
+                       f"(excess {_f(x['mean_index'], '{:+.4f}')}, t {_t(x['t_nw_index'])}, "
+                       f"q {_q(x['q_index'])}), active **{x['verdict_active']}** "
+                       f"(excess {_f(x['mean_active'], '{:+.4f}')}, t {_t(x['t_nw_active'])}, "
+                       f"q {_q(x['q_active'])})"
+                       + ("; **verdict changes**." if x["changed"] else "; unchanged."))
+        out.append("")
+    out.append(H6_OPTIONS_PARAGRAPH + "\n")
+    return out
+
+
 def _repro_line(info: dict, git_hash: str, elapsed_s: float, rss_mb: float) -> str:
     db = info.get("db") or {}
     db_txt = (f"DB: max price date {db.get('db_max_date')}, {db.get('db_price_rows')} "
@@ -421,6 +551,8 @@ def _repro_line(info: dict, git_hash: str, elapsed_s: float, rss_mb: float) -> s
         rt += (f" ({info['active_s']:.0f} s of it for the active-universe comparison"
                + ("; running both universes more than doubles the runtime of the index study "
                   "alone" if info["active_s"] > own else "") + ")")
+    if "h6_s" in info:
+        rt += f"; H6's {len(rs.NULL_EXCESS_SEEDS) - 1} extra null seeds {info['h6_s']:.0f} s"
     return f"- SCORER_VERSION {SCORER_VERSION}; git `{git_hash}`; {db_txt}; {rt}; " \
            f"peak RSS {rss_mb:.0f} MB."
 
@@ -581,6 +713,10 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
         for line in _universe_effect_section(res, compare):
             w(line)
 
+    if len(res.h6):
+        for line in _h6_section(res, compare if index_mode else None):
+            w(line)
+
     w("## Options for Ankit\n")
     w("This report does not recommend new constants. The choices it informs:\n")
     w("1. **Keep the thresholds and span as they are** (`regime.py` unchanged; current state).")
@@ -622,9 +758,11 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
 def run(end: date | None = None, *, universe: str = "index", index_code: str = INDEX_CODE,
         session=None, report_dir: Path = REPORT_DIR, csv_dir: Path = CSV_DIR,
         report_date: date | None = None,
-        complete_from: date = COMPLETE_FROM) -> tuple[Path, rs.StudyResult]:
+        complete_from: date = COMPLETE_FROM, h6: bool = True) -> tuple[Path, rs.StudyResult]:
     """Build the panels, run the study, write the report and CSVs. With
-    ``universe="index"`` the active universe is also studied on the same splits."""
+    ``universe="index"`` the active universe is also studied on the same splits.
+    ``h6`` adds the pre-registered H6 family (``NULL_EXCESS_SEEDS[1:]`` as extra
+    shuffled nulls, section "H6" and ``regime_study_h6_<date>.csv``)."""
     from investbot.evaluation.loader import db_fingerprint
 
     t0 = time.monotonic()
@@ -635,14 +773,21 @@ def run(end: date | None = None, *, universe: str = "index", index_code: str = I
     try:
         feats, tg, nfeats, ntg, info = build_study_panels(
             session, end, universe=universe, index_code=index_code,
-            complete_from=complete_from, compare_active=(universe == "index"))
+            complete_from=complete_from, compare_active=(universe == "index"),
+            null_seeds=rs.NULL_EXCESS_SEEDS[1:] if h6 else ())
         info["db"] = db_fingerprint(session)
     finally:
         if own:
             session.close()
     if not feats:
         raise RuntimeError("no assets with enough daily bars for the regime study")
-    res = rs.run_study(feats, tg, nfeats, ntg)
+    t_study = time.monotonic()
+    res = rs.run_study(feats, tg, nfeats, ntg,
+                       extra_null_panels=info.pop("null_excess_panels", None))
+    logger.info("regime study: statistics %.1f s", time.monotonic() - t_study)
+    if h6:
+        logger.info("regime study: H6 extra null seeds %s: %.1f s of panel building",
+                    rs.NULL_EXCESS_SEEDS[1:], info["h6_s"])
     compare = None
     if universe == "index":
         info.update(coverage_summary(info.pop("membership"), feats["REGIME"], res.oos,
@@ -650,7 +795,9 @@ def run(end: date | None = None, *, universe: str = "index", index_code: str = I
         t_cmp = time.monotonic()
         afeats, atg, anfeats, antg = info.pop("active_panels")
         if afeats:
-            compare = rs.run_study(afeats, atg, anfeats, antg, splits=res.splits)
+            compare = rs.run_study(afeats, atg, anfeats, antg, splits=res.splits,
+                                   extra_null_panels=info.pop("active_null_excess_panels", None))
+        info.pop("active_null_excess_panels", None)
         del afeats, atg, anfeats, antg
         # the active frames come out of the same per-asset pass, so this is the extra cost
         info["active_s"] = time.monotonic() - t_cmp
@@ -662,6 +809,12 @@ def run(end: date | None = None, *, universe: str = "index", index_code: str = I
         [res.tests.assign(universe="index"), compare.tests.assign(universe="active")],
         ignore_index=True)
     tests_out.to_csv(tests_csv, index=False)
+    if len(res.h6):
+        h6_out = res.h6 if compare is None or not len(compare.h6) else pd.concat(
+            [res.h6.assign(universe="index"), compare.h6.assign(universe="active")],
+            ignore_index=True)
+        h6_out.to_csv(tests_csv.with_name(tests_csv.name.replace("_tests_", "_h6_")),
+                      index=False)
     pd.concat([res.base_rates_real.assign(panel="real"),
                res.base_rates_null.assign(panel="null")]).to_csv(rates_csv, index=False)
     text = render_report(res, info, report_date, elapsed_s=time.monotonic() - t0,
@@ -678,6 +831,8 @@ def main(argv=None) -> None:
     ap.add_argument("--universe", choices=UNIVERSES, default=None,
                     help="index: point-in-time members (default when index_membership has "
                          "rows); active: today's active stocks, unmasked")
+    ap.add_argument("--no-h6", action="store_true",
+                    help="skip the pre-registered H6 family (the extra shuffled-null seeds)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
     logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
@@ -698,11 +853,13 @@ def main(argv=None) -> None:
         elif universe == "index" and not has_members:
             print(f"index_membership has no {INDEX_CODE} rows; run `python main.py setup` first")
             sys.exit(1)
-        report, res = run(args.end, universe=universe, session=session)
+        report, res = run(args.end, universe=universe, session=session, h6=not args.no_h6)
     finally:
         session.close()
     counts = res.tests["verdict"].value_counts().to_dict()
     print(f"\n  Report: {report}\n  Universe: {universe}\n  Verdicts: {counts}")
+    if len(res.h6):
+        print(f"  H6 verdicts: {res.h6['verdict'].value_counts().to_dict()}")
 
 
 if __name__ == "__main__":

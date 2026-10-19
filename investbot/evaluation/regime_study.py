@@ -570,6 +570,7 @@ class StudyResult:
     hit_quintiles: pd.DataFrame              # span, horizon, Q1..Q5 mean HIT
     churn: pd.DataFrame                      # span: churn stats
     notes: list[str] = field(default_factory=list)
+    h6: pd.DataFrame = field(default_factory=pd.DataFrame)   # H6 null excess (own BH family)
 
 
 def conditional_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame],
@@ -644,10 +645,91 @@ def calibration_tests(features, targets, dates, splits, horizons=REGIME_HORIZONS
     return pd.DataFrame(rows), pd.DataFrame(quint), pd.DataFrame(churn)
 
 
+def _per_date_stat(section: str, name: str, col: str, features: dict[str, pd.DataFrame],
+                   targets: dict[str, pd.DataFrame], dates) -> pd.Series:
+    """The per-date statistic of one H6 test on one panel, exactly as in H2 / H4:
+    ``group_difference`` (conditional) or ``metrics.daily_ic`` (rank), on ``dates``."""
+    if section == "conditional":
+        labels = features["REGIME"].loc[features["REGIME"].index.isin(dates)]
+        y = targets[col].reindex(index=labels.index, columns=labels.columns)
+        a, b = COMPARISONS[name]
+        return group_difference(labels, y, a, b)
+    S = features[name].loc[features[name].index.isin(dates)]
+    Y = targets[col].reindex(index=S.index, columns=S.columns)
+    return daily_ic(S, Y, MIN_NAMES)
+
+
+def null_excess_series(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame],
+                       null_panels: list[tuple[dict, dict]], dates,
+                       horizons=REGIME_HORIZONS) -> list[tuple[dict, pd.Series, pd.Series]]:
+    """
+    Per H6 test: (keys, x, null mean) as per-date series on the real panel's ``dates``.
+
+    null mean(d) = mean over the panels of ``null_panels`` whose statistic on d is
+    finite (NaN if none); x(d) = real(d) - null mean(d), NaN where either is NaN,
+    so such a date is skipped by every summary.
+    """
+    out = []
+    for section, name, stem in NULL_EXCESS_TESTS:
+        for col, h in _target_keys(stem, horizons, EX_POST_HURST_WINDOW):
+            real = _per_date_stat(section, name, col, features, targets, dates)
+            nulls = np.column_stack(
+                [_per_date_stat(section, name, col, nf, nt, dates)
+                 .reindex(real.index).to_numpy(dtype=np.float64)
+                 for nf, nt in null_panels]) if null_panels else np.full((len(real), 1), np.nan)
+            ok = np.isfinite(nulls)
+            cnt = ok.sum(axis=1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                nm = np.where(cnt > 0, np.where(ok, nulls, 0.0).sum(axis=1) / np.maximum(cnt, 1),
+                              np.nan)
+            null_mean = pd.Series(nm, index=real.index)
+            keys = {"section": section, "group": "H6", "name": name, "target": col,
+                    "horizon": h, "expected_sign": NULL_EXCESS_SIGN}
+            out.append((keys, real - null_mean, null_mean))
+    return out
+
+
+def null_excess_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame],
+                      null_panels: list[tuple[dict, dict]], dates,
+                      splits: list[Split]) -> pd.DataFrame:
+    """
+    The pre-registered H6 family: real minus the seed-averaged shuffled null, per date.
+
+    ``null_panels`` = [(null features, null targets), ...], one per seed (the first
+    is the NULL_SEED panel). Same columns as ``StudyResult.tests``, plus
+    ``null_mean`` (time mean of the seed-averaged null statistic over the dates
+    that enter ``mean``, so the real statistic on those dates is mean + null_mean)
+    and ``n_seeds``. BH over these 6 rows only; ``verdict`` as H1-H5.
+    """
+    rows = []
+    for keys, x, null_mean in null_excess_series(features, targets, null_panels, dates):
+        used = np.isfinite(x.to_numpy(dtype=np.float64))
+        nm = null_mean.to_numpy(dtype=np.float64)[used]
+        rows.append({**keys, **_summary(x, keys["horizon"]),
+                     "block_share": block_sign_share(x, splits, NULL_EXCESS_SIGN),
+                     "span": math.nan,
+                     "null_mean": float(nm.mean()) if nm.size else math.nan,
+                     "n_seeds": len(null_panels)})
+    df = pd.DataFrame(rows)
+    df["q"] = bh_adjust(df["p"].to_numpy(dtype=np.float64))
+    df["verdict"] = [verdict(r) for _, r in df.iterrows()]
+    cols = ["section", "group", "name", "target", "horizon", "expected_sign", "n_days", "mean",
+            "t_nw", "p", "block_share", "span", "q", "verdict", "null_mean", "n_seeds"]
+    return df[cols]
+
+
 def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame],
               null_features: dict[str, pd.DataFrame], null_targets: dict[str, pd.DataFrame],
-              splits: list[Split] | None = None) -> StudyResult:
-    """Every statistic of the study on the OOS dates of ``splits`` (harness splits if None)."""
+              splits: list[Split] | None = None,
+              extra_null_panels: list[tuple[dict, dict]] | None = None) -> StudyResult:
+    """
+    Every statistic of the study on the OOS dates of ``splits`` (harness splits if None).
+
+    ``extra_null_panels`` (the shuffled nulls of ``NULL_EXCESS_SEEDS[1:]``, only the
+    ``NULL_EXCESS_FEATURES`` / ``NULL_EXCESS_TARGETS`` columns needed) adds the H6
+    family in ``h6``, with ``null_features``/``null_targets`` as the first seed.
+    Without it ``h6`` is empty and everything else is unchanged.
+    """
     if splits is None:
         splits = study_splits(features["REGIME"])
     oos = oos_dates(splits)
@@ -659,6 +741,10 @@ def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame
     tests["verdict"] = [verdict(r) for _, r in tests.iterrows()]
     null_cond, _ = conditional_tests(null_features, null_targets, oos, splits)
     null_rank = rank_tests(null_features, null_targets, oos, splits)
+    h6 = pd.DataFrame()
+    if extra_null_panels is not None:
+        h6 = null_excess_tests(features, targets,
+                               [(null_features, null_targets), *extra_null_panels], oos, splits)
     return StudyResult(
         splits=splits, oos=oos,
         base_rates_real=label_base_rates(features["REGIME"], oos),
@@ -666,5 +752,5 @@ def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame
         hurst_real=distribution(features[HURST_COL], oos),
         hurst_null=distribution(null_features[HURST_COL], oos),
         tests=tests, group_means=means, null_conditional=null_cond, null_rank=null_rank,
-        hit_quintiles=quint, churn=churn,
+        hit_quintiles=quint, churn=churn, h6=h6,
     )
