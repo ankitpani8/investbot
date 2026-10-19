@@ -43,6 +43,7 @@ from investbot.data.index_membership import HISTORY_START
 from investbot.evaluation.baselines import BASELINE_COLUMNS
 from investbot.evaluation.evaluate import (
     COMPARISON_RETURN,
+    INVERTED_SUBSET,
     PRIMARY_RETURN,
     PROMISING_Q,
     PROMISING_SIGN_SHARE,
@@ -639,6 +640,31 @@ def _setup_universe_lines(info: RunInfo) -> list[str]:
     return lines
 
 
+def inverted_section(table: pd.DataFrame) -> str:
+    """Descriptive held-portfolio view of promising-inverted signals (negated signal)."""
+    inv = table[(table["label"] == "open") & (table["subset"] == INVERTED_SUBSET)]
+    out = ["## Promising signals, inverted direction (descriptive)\n"]
+    if inv.empty:
+        out.append("No promising signal has an inverted IC in this run, so there are no "
+                   "inverted-direction rows.\n")
+        return "\n".join(out)
+    inv = inv.sort_values(["signal", "horizon"])
+    out.append("Each row is a headline test that is promising with a **negative** IC, re-run on "
+               "the negated signal (same labels, universe masking, splits, costs and bootstrap): "
+               "its top bucket is the original lowest non-empty bucket.\n")
+    out.append("Cost check (open→close):\n")
+    out.append(_table(inv, _COST_COLS))
+    out.append("Held portfolio (open-to-open, compounded):\n")
+    out.append(_table(with_dd_days_text(inv), _HELD_COLS))
+    out.append("Bootstrap intervals:\n")
+    out.append(_table(with_interval_text(inv), _BOOT_COLS))
+    out.append("**Caveat.** These rows are chosen *because* their IC was significant with the "
+               "wrong sign, so their portfolio numbers are conditional on that selection: they "
+               "are not a test and carry no q-value, and the bootstrap intervals do not account "
+               "for the selection. The production polarity is unchanged.\n")
+    return "\n".join(out)
+
+
 def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
                   report_date: date, compare: pd.DataFrame | None = None) -> str:
     """``compare``: the "active"-universe table on the same splits (adds "Universe effect")."""
@@ -780,6 +806,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       f"with this many rows, about {1 - BOOTSTRAP_LEVEL:.0%} of the intervals exclude 0 by "
       "chance even when nothing works, so the Benjamini–Hochberg verdict above stays the "
       "headline. Calmar intervals at h = 20 rest on about 34 periods and are descriptive.\n")
+
+    w(inverted_section(table))
 
     w(dividend_section(table, info, ["TECH_SCORE", *families, *BASELINE_COLUMNS]))
 

@@ -18,6 +18,13 @@ long metrics table, one row per (signal, label, horizon, subset):
               "regime:<r>"    OOS dates, names whose REGIME on that date is r; these rows
                               also carry the pooled IC (``pooled_*``, NaN elsewhere)
               "year:<YYYY>"   OOS dates of one calendar year
+              "oos:inverted"  descriptive, not a test: for each headline row that is promising with
+                              ``direction == "inverted"``, the same metrics (IC, quintiles, cost
+                              check, held portfolio, bootstrap) on the negated signal, same
+                              labels. Selected after seeing the IC, so its numbers are conditional
+                              on that selection; ``ic_q`` and ``block_sign_share`` are NaN,
+                              ``promising`` False, ``direction`` "negated", and the rows never
+                              enter a BH family
 
 Then, on the headline rows (label "open", subset "oos") only:
     ic_q            Benjamini–Hochberg q-value across all those tests
@@ -77,6 +84,10 @@ PROMISING_SIGN_SHARE: float = 0.70
 #: (label, subset) pairs whose held portfolio gets bootstrap intervals; the report's
 #: "Held portfolio: bootstrap intervals" table reads the headline rows and nothing else does.
 BOOTSTRAP_ROWS: tuple[tuple[str, str], ...] = (("open", "oos"),)
+#: ``subset`` of the descriptive rows for promising-inverted signals (negated signal, no q-value).
+INVERTED_SUBSET: str = "oos:inverted"
+#: ``direction`` of those rows.
+NEGATED_DIRECTION: str = "negated"
 #: Column whose cross-section defines the evaluation calendar (first usable date).
 CALENDAR_COLUMN: str = "TECH_SCORE"
 
@@ -119,6 +130,12 @@ def evaluation_calendar(features: pd.DataFrame, min_names: int = MIN_NAMES) -> p
 
 def _wide(series: pd.Series, dates: pd.DatetimeIndex, tickers) -> pd.DataFrame:
     return series.unstack("ticker").reindex(index=dates, columns=tickers)
+
+
+def signal_matrix(features: pd.DataFrame, sig: str, dates: pd.DatetimeIndex, tickers,
+                  U: pd.DataFrame | None) -> pd.DataFrame:
+    """Wide (dates × tickers) matrix of one signal, cells outside the universe NaN."""
+    return apply_universe(_wide(features[sig], dates, tickers), U)
 
 
 def universe_frame(features: pd.DataFrame, dates: pd.DatetimeIndex, tickers) -> pd.DataFrame | None:
@@ -177,7 +194,7 @@ def evaluate(
 
     rows: list[dict] = []
     for sig in signals:
-        S = in_universe(_wide(features[sig], cal, tickers))
+        S = signal_matrix(features, sig, cal, tickers, U)
         if not np.isfinite(S.to_numpy(dtype=np.float64)).any():
             continue                       # e.g. TECH_SCORE_MTF on daily-only frames
         for h in horizons:
@@ -225,7 +242,27 @@ def evaluate(
     table = pd.DataFrame(rows)
     if table.empty:
         return table, splits
-    return _add_multiple_testing(table), splits
+    table = _add_multiple_testing(table)
+    inverted = promising_inverted(table)
+    extra = []
+    for sig, h in inverted:
+        S = signal_matrix(features, sig, cal, tickers, U)
+        Y, Yo = ys[("open", h)], ys[("oo", h)]
+        extra.append({"signal": sig, "label": "open", "horizon": h, "subset": INVERTED_SUBSET,
+                      **signal_metrics(-S.loc[oos], Y.loc[oos], h, min_names, cost, Yo.loc[oos],
+                                       True),
+                      "ic_q": np.nan, "block_sign_share": np.nan, "promising": False,
+                      "direction": NEGATED_DIRECTION})
+    if extra:
+        table = pd.concat([table, pd.DataFrame(extra)], ignore_index=True)
+    return table, splits
+
+
+def promising_inverted(table: pd.DataFrame) -> list[tuple[str, int]]:
+    """(signal, horizon) of every headline row that is promising with an inverted IC."""
+    head = headline(table)
+    sel = head[head["promising"].astype(bool) & (head["direction"] == "inverted")]
+    return [(str(s), int(h)) for s, h in zip(sel["signal"], sel["horizon"])]
 
 
 def _add_multiple_testing(table: pd.DataFrame) -> pd.DataFrame:
