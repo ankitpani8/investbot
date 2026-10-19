@@ -158,6 +158,21 @@ def test_bootstrap_intervals_shares_draws_with_single_calls():
         assert both[name] == bootstrap_interval(cols, fn)
 
 
+def test_cached_indices_equal_a_fresh_draw():
+    # the memoised index matrix is the one stationary_bootstrap_indices draws from the seed
+    rng = np.random.default_rng(13)
+    x = rng.normal(0.0, 1.0, size=(45, 1))
+    for _ in range(2):                                  # second call hits the cache
+        res = bootstrap_interval(x, _mean0, n_boot=400, seed=99)
+        idx = stationary_bootstrap_indices(45, 4.0, 400, np.random.default_rng(99))
+        draws = x[idx, 0].mean(axis=1)
+        lo, hi = np.nanquantile(draws, [0.05, 0.95])
+        # same draws; only the summation order of the strided view differs (last bits)
+        assert res["lo"] == pytest.approx(lo, rel=1e-12)
+        assert res["hi"] == pytest.approx(hi, rel=1e-12)
+        assert res["share_pos"] == pytest.approx((draws > 0).mean(), abs=1.0 / 400)
+
+
 def test_coverage_of_the_mean_on_iid_normal():
     hits = 0
     for i in range(200):

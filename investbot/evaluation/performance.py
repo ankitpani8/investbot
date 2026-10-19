@@ -49,6 +49,7 @@ Bootstrap intervals (``bootstrap_interval``)
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -265,6 +266,16 @@ def stationary_bootstrap_indices(n: int, mean_block: float, n_boot: int,
     return idx
 
 
+@lru_cache(maxsize=8)
+def _cached_indices(n: int, mean_block: float, n_boot: int, seed: int) -> np.ndarray:
+    """``stationary_bootstrap_indices`` with ``default_rng(seed)``, memoised (read-only).
+    Every harness row uses the same seed, so rows with the same n share one index matrix."""
+    idx = stationary_bootstrap_indices(n, mean_block, n_boot, np.random.default_rng(seed))
+    idx = idx.astype(np.int32) if n < 2 ** 31 else idx
+    idx.flags.writeable = False
+    return idx
+
+
 def bootstrap_intervals(columns: np.ndarray, stat_fns: dict[str, callable], *,
                         mean_block: float | None = None, n_boot: int = BOOTSTRAP_N,
                         level: float = BOOTSTRAP_LEVEL, seed: int = BOOTSTRAP_SEED,
@@ -281,7 +292,7 @@ def bootstrap_intervals(columns: np.ndarray, stat_fns: dict[str, callable], *,
              "n_finite_draws": 0, "mean_block": mb}
     if n < max(min_periods, 1):
         return {k: dict(empty) for k in stat_fns}
-    idx = stationary_bootstrap_indices(n, mb, n_boot, np.random.default_rng(seed))
+    idx = _cached_indices(n, mb, n_boot, seed)
     # (n_boot, n, k) view of a (k, n_boot, n) array, so each column is contiguous
     sample = np.moveaxis(np.take(np.ascontiguousarray(x.T), idx, axis=1), 0, -1)
     alpha = (1.0 - level) / 2.0
@@ -324,10 +335,12 @@ def bootstrap_interval(columns: np.ndarray, stat_fn, *, mean_block: float | None
 
 def _ratio(x: np.ndarray, scale: float) -> np.ndarray:
     """mean / sd (ddof 1) along axis 1 times ``scale``; NaN where the row is constant."""
-    sd = x.std(axis=1, ddof=1)
+    mean = x.mean(axis=1)
+    dev = x - mean[:, None]
+    sd = np.sqrt(np.einsum("ij,ij->i", dev, dev) / (x.shape[1] - 1))
     flat = (x.max(axis=1) == x.min(axis=1)) | ~(sd > 0.0)
     with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(flat, np.nan, x.mean(axis=1) / np.where(flat, 1.0, sd) * scale)
+        return np.where(flat, np.nan, mean / np.where(flat, 1.0, sd) * scale)
 
 
 def boot_info_ratio(scale: float):
