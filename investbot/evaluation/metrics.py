@@ -38,7 +38,10 @@ Held portfolio (``held_*``)
     CAGR (gross, net, universe), volatility, max drawdown and information
     ratio against the universe, plus the §9.1 risk and trade-quality KPIs from
     ``performance.py`` (Sharpe against ``RISK_FREE_RATE_ANNUAL``, Sortino,
-    Calmar, drawdown duration, VaR / CVaR per holding period, win rates).
+    Calmar, drawdown duration, VaR / CVaR per holding period, win rates) and
+    90% stationary block-bootstrap intervals for IR, Sharpe net, CAGR net and
+    net − universe CAGR (``performance.bootstrap_interval``, per row, not
+    adjusted for multiple comparisons).
 
 Pooled IC (``pooled_*``)
     For thin subsets (e.g. one regime) where few dates reach ``MIN_NAMES``:
@@ -53,6 +56,12 @@ import numpy as np
 import pandas as pd
 
 from investbot.evaluation.performance import (
+    BOOTSTRAP_MIN_PERIODS,
+    boot_cagr,
+    boot_excess_cagr,
+    boot_info_ratio,
+    boot_sharpe,
+    bootstrap_intervals,
     calmar,
     drawdown_stats,
     sharpe,
@@ -237,7 +246,10 @@ HELD_KEYS: tuple[str, ...] = ("n_periods", "turnover", "cagr_gross", "cagr_net",
                               "sharpe_net", "sharpe_universe", "sortino_net", "calmar_net",
                               "max_dd_duration_days_net", "max_dd_recovered_net",
                               "max_drawdown_universe", "var95_net", "cvar95_net",
-                              "period_win_rate_net", "excess_win_rate_net")
+                              "period_win_rate_net", "excess_win_rate_net",
+                              "boot_mean_block", "ir_net_lo", "ir_net_hi", "ir_net_share_pos",
+                              "sharpe_net_lo", "sharpe_net_hi", "cagr_net_lo", "cagr_net_hi",
+                              "excess_cagr_lo", "excess_cagr_hi")
 
 
 def held_periods(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
@@ -305,6 +317,17 @@ def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
 
     The IR, vol and CAGR use no risk-free rate: they compare against the
     equal-weight universe over the same periods, not against cash.
+
+    The last keys are stationary block-bootstrap intervals (``performance.py``,
+    pre-registered ``BOOTSTRAP_*`` constants, the same seed for every call so
+    signals share common random numbers) of the period pairs (net, universe),
+    resampled jointly; NaN with fewer than ``BOOTSTRAP_MIN_PERIODS`` periods:
+
+        boot_mean_block                    mean block length in periods
+        ir_net_lo / _hi / _share_pos       interval of info_ratio_net, share of draws > 0
+        sharpe_net_lo / _hi                interval of sharpe_net
+        cagr_net_lo / _hi                  interval of cagr_net
+        excess_cagr_lo / _hi               interval of cagr_net - cagr_universe
     """
     p = held_periods(members, Y_oo, horizon, cost)
     n = len(p)
@@ -344,6 +367,21 @@ def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
             "cvar95_net": cvar,
             "period_win_rate_net": trade_stats(net)["win_rate"],
             "excess_win_rate_net": trade_stats(active)["win_rate"],
+        })
+    if n >= BOOTSTRAP_MIN_PERIODS:
+        per_year = TRADING_DAYS / horizon
+        boot = bootstrap_intervals(
+            np.column_stack([net, p["universe"].to_numpy()]),
+            {"ir": boot_info_ratio(scale),
+             "sharpe": boot_sharpe(per_year, RISK_FREE_RATE_ANNUAL),
+             "cagr": boot_cagr(years), "excess": boot_excess_cagr(years)})
+        out.update({
+            "boot_mean_block": boot["ir"]["mean_block"],
+            "ir_net_lo": boot["ir"]["lo"], "ir_net_hi": boot["ir"]["hi"],
+            "ir_net_share_pos": boot["ir"]["share_pos"],
+            "sharpe_net_lo": boot["sharpe"]["lo"], "sharpe_net_hi": boot["sharpe"]["hi"],
+            "cagr_net_lo": boot["cagr"]["lo"], "cagr_net_hi": boot["cagr"]["hi"],
+            "excess_cagr_lo": boot["excess"]["lo"], "excess_cagr_hi": boot["excess"]["hi"],
         })
     return out
 

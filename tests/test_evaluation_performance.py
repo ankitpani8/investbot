@@ -302,7 +302,7 @@ def _pinned_fixture():
 
 def test_held_keys_extend_the_old_ones_in_order():
     assert HELD_KEYS[:8] == OLD_KEYS
-    assert HELD_KEYS[8:] == ("sharpe_net", "sharpe_universe", "sortino_net", "calmar_net",
+    assert HELD_KEYS[8:19] == ("sharpe_net", "sharpe_universe", "sortino_net", "calmar_net",
                              "max_dd_duration_days_net", "max_dd_recovered_net",
                              "max_drawdown_universe", "var95_net", "cvar95_net",
                              "period_win_rate_net", "excess_win_rate_net")

@@ -59,6 +59,12 @@ from investbot.evaluation.metrics import (
     SLIPPAGE_PER_SIDE,
     statutory_round_trip_cost,
 )
+from investbot.evaluation.performance import (
+    BOOTSTRAP_LEVEL,
+    BOOTSTRAP_MIN_PERIODS,
+    BOOTSTRAP_N,
+    BOOTSTRAP_SEED,
+)
 from investbot.evaluation.panel import (
     SCORE_COLUMNS,
     UNIVERSE_COLUMN,
@@ -230,6 +236,31 @@ def with_dd_days_text(df: pd.DataFrame) -> pd.DataFrame:
                                                 df["held_max_dd_recovered_net"])])
 
 
+def _interval_text(lo, hi, fmt) -> str:
+    """``[lo, hi]`` with each end formatted by ``fmt``; "–" when either end is missing."""
+    if any(v is None or not np.isfinite(v) for v in (lo, hi)):
+        return "–"
+    return f"[{fmt(lo)}, {fmt(hi)}]"
+
+
+#: (text column, lo key, hi key, formatter) of the bootstrap-interval table.
+_BOOT_INTERVALS = (
+    ("held_ir_text", "held_ir_net_lo", "held_ir_net_hi", lambda x: _f(x, "{:+.2f}")),
+    ("held_sharpe_text", "held_sharpe_net_lo", "held_sharpe_net_hi", lambda x: _f(x, "{:+.2f}")),
+    ("held_cagr_text", "held_cagr_net_lo", "held_cagr_net_hi", _pct),
+    ("held_excess_text", "held_excess_cagr_lo", "held_excess_cagr_hi", _pct),
+)
+
+
+def with_interval_text(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` plus the ``[lo, hi]`` text columns of the bootstrap-interval table."""
+    cols = {}
+    for name, lo, hi, fmt in _BOOT_INTERVALS:
+        cols[name] = ([_interval_text(a, b, fmt) for a, b in zip(df[lo], df[hi])]
+                      if lo in df and hi in df else "–")
+    return df.assign(**cols)
+
+
 def _table(df: pd.DataFrame, cols: list[tuple[str, str, callable]]) -> str:
     """Markdown table: cols = [(header, column, formatter)]."""
     if df.empty:
@@ -278,6 +309,15 @@ _HELD_COLS = [
     ("Calmar", "held_calmar_net", lambda x: _f(x, "{:+.2f}")),
     ("max DD days", "held_dd_days_text", _s),
     ("CVaR95 /period", "held_cvar95_net", lambda x: _f(x * 100, "{:.2f}%")),
+]
+_BOOT_COLS = [
+    ("signal", "signal", _s), ("h", "horizon", _int), ("periods", "held_n_periods", _int),
+    ("mean block", "held_boot_mean_block", _int),
+    ("IR [lo, hi]", "held_ir_text", _s),
+    ("share IR > 0", "held_ir_net_share_pos", lambda x: _f(x, "{:.2f}")),
+    ("Sharpe net [lo, hi]", "held_sharpe_text", _s),
+    ("CAGR net [lo, hi]", "held_cagr_text", _s),
+    ("net − universe CAGR [lo, hi]", "held_excess_text", _s),
 ]
 _SPLIT_COLS = [
     ("signal", "signal", _s), ("h", "horizon", _int), ("subset", "subset", _s),
@@ -647,6 +687,10 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     w(f"- Risk-free rate for Sharpe and Sortino: {RISK_FREE_RATE_ANNUAL:.2%} a year, a constant "
       "placeholder for the 91-day T-bill (master plan §9.1), not a dated series. VaR/CVaR are "
       "per holding period of h bars.")
+    w(f"- Bootstrap intervals (held portfolio): stationary block bootstrap, {BOOTSTRAP_N} "
+      f"resamples, {BOOTSTRAP_LEVEL:.0%} percentile intervals, seed {BOOTSTRAP_SEED} (the same "
+      "for every row), mean block length max(1, round(n^(1/3))) periods, pre-registered (no "
+      f"Politis–White selection), none below {BOOTSTRAP_MIN_PERIODS} periods.")
     w(f"- Costs: round trip {ROUND_TRIP_COST:.3%} of traded value = statutory charges and "
       f"brokerage from `config/tax_regimes.py` on a ₹{REFERENCE_TRADE_VALUE / 1e5:g} lakh order "
       f"({statutory_round_trip_cost():.3%}) + slippage {SLIPPAGE_PER_SIDE:.3%} per side.")
@@ -720,6 +764,18 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
       "counted to the end), CVaR95 = mean loss of the worst 5% of holding periods (a loss over "
       "h bars, not a daily one). These are cost-only signal portfolios without taxes: the §9.2 "
       "go/no-go thresholds apply to the full after-tax strategy, so no verdict is given here.\n")
+
+    w(f"## Held portfolio: bootstrap intervals ({BOOTSTRAP_LEVEL:.0%}, stationary block "
+      "bootstrap)\n")
+    w(_table(with_interval_text(_order(head, portfolio_names)), _BOOT_COLS))
+    w(f"Each row resamples its own held-portfolio periods (net and universe jointly, the "
+      f"same indices for both) with a stationary block bootstrap (Politis & Romano 1994; "
+      f"{BOOTSTRAP_N} resamples, mean block = round(n^(1/3)) periods, circular), seed "
+      f"{BOOTSTRAP_SEED} for every row; percentile intervals, \"–\" with fewer than "
+      f"{BOOTSTRAP_MIN_PERIODS} periods. The intervals are **per row and not BH-adjusted**: "
+      f"with this many rows, about {1 - BOOTSTRAP_LEVEL:.0%} of the intervals exclude 0 by "
+      "chance even when nothing works, so the Benjamini–Hochberg verdict above stays the "
+      "headline.\n")
 
     w(dividend_section(table, info, ["TECH_SCORE", *families, *BASELINE_COLUMNS]))
 
