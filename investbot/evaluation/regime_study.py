@@ -39,6 +39,32 @@ Pre-registered hypotheses and expected signs (written before the first run)
     blocks; *wrong sign* = the opposite sign with q < 0.10; otherwise *not
     supported*. p-values are two-sided (normal approximation of the t-stat).
 
+Pre-registered null-excess family H6 (task 330, written 2026-10-19 before any H6 run
+on real data; H1-H5 above and their BH family are unchanged)
+    Why: VOL_RATIO (and so REGIME_SCORE_CHAOS) and FWD_VOLX share the REALVOL_250
+    denominator, and REALVOL_20 sits inside REALVOL_250's window, so the H2/H4
+    volatility tests have a large mechanical part that the shuffled null shows
+    too. H6 asks whether the real association exceeds that mechanical part.
+    NULL_EXCESS_SEEDS     (20261018, 20261019, 20261020, 20261021, 20261022);
+                          the first is NULL_SEED, so the existing null panel is
+                          reused. No other seeds.
+    Tests (6, all with expected sign +1: real exceeds the mechanical null)
+        (i)   H2 chaos - rest          on FWD_VOLX_20, FWD_VOLX_60
+        (ii)  H4 REGIME_SCORE_CHAOS    vs FWD_VOLX_20, FWD_VOLX_60
+        (iii) H4 VOL_RATIO             vs FWD_VOLX_20, FWD_VOLX_60
+        No MDD, no other targets.
+    Statistic per test and OOS date d
+        x_d = stat_real(d) - mean_k stat_null_k(d), where stat is the per-date
+        paired group difference (``group_difference``, >= MIN_GROUP_NAMES names
+        per label) for (i) and the per-date Spearman IC (``metrics.daily_ic``,
+        >= ``metrics.MIN_NAMES`` names) for (ii)/(iii), computed on the real panel
+        and on the panel of each seed k. The null mean is over the seeds whose
+        value on d is finite; a date with no finite null value (or no finite
+        real value) is skipped. Summary: ``_summary`` (time mean, Newey-West t
+        with lag H, two-sided normal p, as H1-H4) and ``block_sign_share``.
+    BH over the 6 H6 tests as their own family; the same ``verdict`` rule
+    (q < 0.10 and the expected sign in >= 70% of the test blocks).
+
 Features vs labels
     ``regime_conditioning`` returns features (bar t uses bars <= t only,
     tested for truncation invariance). ``forward_regime_targets`` returns
@@ -104,6 +130,8 @@ EX_POST_HURST_WINDOW: int = regime.REGIME_WINDOW
 CONFIDENCE_SPANS: tuple[int, ...] = (1, 3, 5, 10, 20)
 NULL_SEED: int = 20261018
 MIN_GROUP_NAMES: int = 3
+#: H6 (pre-registered): shuffled-null seeds; the first is NULL_SEED (the existing null panel).
+NULL_EXCESS_SEEDS: tuple[int, ...] = (20261018, 20261019, 20261020, 20261021, 20261022)
 
 #: Confidence levels whose crossings count as churn.
 CROSSING_LEVELS: tuple[float, ...] = (0.1, 0.5)
@@ -464,6 +492,17 @@ RANK_TESTS: tuple[tuple[str, str, int], ...] = (
     ("REGIME_SCORE_CHAOS", "VOLX", +1), ("REGIME_SCORE_CHAOS", "MDD", -1),
     ("VOL_RATIO", "VOLX", +1), ("VOL_RATIO", "MDD", -1),
 )
+#: H6 null-excess tests (pre-registered): (section, comparison or signal, target stem), each
+#: at every REGIME_HORIZONS horizon, expected sign +1.
+NULL_EXCESS_TESTS: tuple[tuple[str, str, str], ...] = (
+    ("conditional", "chaos − rest", "VOLX"),
+    ("rank", "REGIME_SCORE_CHAOS", "VOLX"),
+    ("rank", "VOL_RATIO", "VOLX"),
+)
+NULL_EXCESS_SIGN: int = +1
+#: The only columns H6 reads (the runner keeps just these for the extra seeds).
+NULL_EXCESS_FEATURES: tuple[str, ...] = ("REGIME", "REGIME_SCORE_CHAOS", "VOL_RATIO")
+NULL_EXCESS_TARGETS: tuple[str, ...] = tuple(f"FWD_VOLX_{h}" for h in REGIME_HORIZONS)
 
 
 def _target_keys(stem: str, horizons, hurst_window: int) -> list[tuple[str, int]]:
