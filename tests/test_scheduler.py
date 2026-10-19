@@ -325,7 +325,7 @@ def test_job_wrapper_owns_and_closes_session(session, monkeypatch):
 def test_create_scheduler_jobs_unchanged():
     sched = jobs.create_scheduler()
     got = {j.id: j for j in sched.get_jobs()}
-    assert set(got) == {"intraday_refresh", "daily_prices", "quarterly_financials"}
+    assert set(got) == {"intraday_refresh", "daily_prices", "quarterly_financials", "constituents_check"}
 
     def fields(job):
         return {f.name: str(f) for f in job.trigger.fields}

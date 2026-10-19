@@ -4,6 +4,7 @@ Uses APScheduler to run:
 - Intraday price refresh every 15-30 min during market hours
 - Daily post-close pipeline: price ingestion, data-quality audit, technical scoring
 - Quarterly financial statement check
+- Weekly NIFTY50 constituent check against NSE's list (read-only; logs only)
 """
 import logging
 from collections import Counter, defaultdict
@@ -20,6 +21,7 @@ from investbot.data.db import SessionLocal
 from investbot.data.ingestion.prices import ingest_all_prices
 from investbot.data.ingestion.financials import ingest_all_financials
 from investbot.data import quality
+from investbot.data import constituents_check
 from investbot.data.models import Asset
 from investbot.scoring.technical import scorer
 
@@ -194,6 +196,39 @@ def _job_quarterly_financials():
         session.close()
 
 
+def run_constituents_check(fetcher=None) -> constituents_check.ConstituentDiff | None:
+    """
+    Compare NIFTY50_TICKERS with NSE's list and log the outcome: ERROR on a mismatch, INFO on a
+    match, WARNING when the list cannot be fetched or parsed. Read-only; never raises.
+    Returns the diff, or None when the check could not run.
+    """
+    try:
+        diff = constituents_check.check_nifty50(fetcher=fetcher)
+    except (constituents_check.ConstituentFetchError, constituents_check.ConstituentParseError) as e:
+        logger.warning(f"SCHEDULER: constituent check could not run: {e}")
+        return None
+    except Exception:
+        logger.exception("SCHEDULER: constituent check failed unexpectedly")
+        return None
+
+    if diff.matches and not diff.members_disagree:
+        logger.info("SCHEDULER: constituent check: NIFTY50_TICKERS matches NSE's list")
+    else:
+        logger.error(
+            f"SCHEDULER: constituent check MISMATCH: added (in NSE, not ours) {diff.added}; "
+            f"removed (ours, not in NSE) {diff.removed}; index_membership disagrees {diff.members_disagree}. "
+            f"Run `python main.py constituents`, then append the rows to nifty50_changes.csv, "
+            f"update NIFTY50_TICKERS and bump CURRENT_AS_OF."
+        )
+    return diff
+
+
+def _job_constituents_check():
+    """Weekly NIFTY50 constituent check; only logs."""
+    logger.info("SCHEDULER: Constituent check triggered")
+    run_constituents_check()
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
     Create and configure the scheduler with all jobs.
@@ -243,5 +278,19 @@ def create_scheduler() -> BackgroundScheduler:
         replace_existing=True,
     )
 
-    logger.info("Scheduler configured with 3 jobs")
+    # NIFTY50 constituent check against NSE's list: Saturdays at 10:00 AM IST (read-only, logs only)
+    scheduler.add_job(
+        _job_constituents_check,
+        CronTrigger(
+            day_of_week="sat",
+            hour=10,
+            minute=0,
+            timezone=tz,
+        ),
+        id="constituents_check",
+        name="NIFTY50 Constituent Check (weekly)",
+        replace_existing=True,
+    )
+
+    logger.info("Scheduler configured with 4 jobs")
     return scheduler

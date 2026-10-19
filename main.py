@@ -18,6 +18,9 @@ Usage:
     python main.py dq --purge # ...and delete the bad rows (next ingest re-fetches them)
     python main.py score [TICKER] [--timeframe 1d|15m] [--as-of YYYY-MM-DD] [--no-cache]
                               # Technical scores, ranked (one asset in detail with TICKER)
+    python main.py constituents
+                              # Compare NIFTY50_TICKERS with NSE's ind_nifty50list.csv (read-only);
+                              # exit 0 match, 1 mismatch, 2 fetch/parse error
     python main.py evaluate [--horizons 1,5,20] [--start YYYY-MM-DD] [--end YYYY-MM-DD]
                             [--universe index|active]
                               # index (default when index_membership has NIFTY50 rows): point-in-time
@@ -406,6 +409,42 @@ def cmd_evaluate():
     print(f"  Promising signal × horizon tests: {n_prom}\n")
 
 
+UPKEEP_REMINDER = (
+    "To apply a change: append the rows to investbot/config/index_history/nifty50_changes.csv "
+    "(with the NSE press-release source), update NIFTY50_TICKERS in investbot/config/tickers.py, "
+    "and bump CURRENT_AS_OF in investbot/data/index_membership.py."
+)
+
+
+def cmd_constituents(fetcher=None):
+    """Compare NIFTY50_TICKERS with NSE's current list. Read-only. Exit 0 match, 1 mismatch, 2 error."""
+    from investbot.data.constituents_check import (
+        ConstituentFetchError, ConstituentParseError, NIFTY50_LIST_URL, check_nifty50,
+    )
+    from investbot.data.index_membership import current_tickers
+
+    try:
+        diff = check_nifty50(fetcher=fetcher)
+    except (ConstituentFetchError, ConstituentParseError) as e:
+        print(f"\n  Constituent check failed ({type(e).__name__}): {e}\n")
+        sys.exit(2)
+
+    ours = len(current_tickers())
+    print(f"\n  Source:        {NIFTY50_LIST_URL}")
+    print(f"  NSE count:     {ours + len(diff.added) - len(diff.removed)}")
+    print(f"  Our count:     {ours}")
+    print(f"  added   (in NSE, not in NIFTY50_TICKERS): {', '.join(diff.added) or '-'}")
+    print(f"  removed (in NIFTY50_TICKERS, not in NSE): {', '.join(diff.removed) or '-'}")
+    if diff.members_disagree:
+        print(f"  index_membership chain disagrees with NIFTY50_TICKERS on: "
+              f"{', '.join(diff.members_disagree)}")
+    if diff.matches and not diff.members_disagree:
+        print("\n  OK: NIFTY50_TICKERS matches NSE's list.\n")
+        return
+    print(f"\n  MISMATCH. {UPKEEP_REMINDER}\n")
+    sys.exit(1)
+
+
 # ── CLI dispatch ──────────────────────────────────────────
 COMMANDS = {
     "setup": cmd_setup,
@@ -416,6 +455,7 @@ COMMANDS = {
     "dq": cmd_dq,
     "score": cmd_score,
     "evaluate": cmd_evaluate,
+    "constituents": cmd_constituents,
 }
 
 if __name__ == "__main__":
