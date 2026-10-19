@@ -1,4 +1,40 @@
-# InvestBot — Master Plan v3.0
+# InvestBot — Master Plan v4.0
+
+## Changes in v4 (2026-10-19)
+
+The file keeps its v3 name because CLAUDE.md links to it. Where CLAUDE.md and this plan still differ, CLAUDE.md wins. Only decided items were folded in (CLAUDE.md, and the **Decided** section of `docs/DECISIONS_PENDING.md`); nothing under **Pending** was resolved.
+
+1. **TA-Lib instead of pandas-ta.** Touched: §2.6, §3 (architecture diagram), §5.1 (library line, why pandas-ta was dropped, indicator list heading and family lists, custom-indicator table heading, feature total), §7, §8, Phase 2 task 1. Indicators that the indicator layer does not compute are listed as "Not implemented"; Ichimoku's Chikou Span is excluded (lookahead). Source: CLAUDE.md "Source of truth", first bullet.
+2. **Institutional flow rules.** New §5.5. FII and DII net flow combined, 3-day z-score > 1.5 activation, bulk/block deals confirmation-only, shareholding change as a slow independent signal, 21-day LODR shareholding lag; everything else marked "to be designed". Source: CLAUDE.md "Source of truth", second bullet.
+3. **Top-level cross-asset-class allocation layer.** Touched: §3 (architecture diagram) and §6 (next to "Cross-Asset Rebalancing"). Source: CLAUDE.md "Source of truth", third bullet.
+4. **Evaluation before tuning.** New §9.4 on the walk-forward forward-return harness and the regime study, with links to `docs/reports/`. Weight, threshold and polarity changes need harness evidence. Source: CLAUDE.md "Current priorities" 1 and 4; Decided 2026-10-18 "Evaluate before tuning".
+5. **Point-in-time fundamentals.** Touched: §5.2 and Phase 3 (§10). A filing's numbers count from its publication date, or conservatively from period end + 45 days (quarterly) / + 60 days (annual), per SEBI LODR Reg. 33. Kept separate from the 21-day shareholding lag in §5.5. Source: CLAUDE.md "Current priorities" 3.
+6. **§7 project structure** replaced with the layout that exists (CLAUDE.md "Layout" plus `investbot/trading/`, `investbot/evaluation/`, `scripts/`, `tools/`); modules that do not exist yet are marked "(planned)". Source: CLAUDE.md "Layout".
+7. **Decided entries that change plan text** (one sentence each):
+   - Confluence polarity (Decided 2026-10-18 "Confluence polarity"): §5.1 confluence scoring sentence.
+   - Scorer storage on [-1, 1] in `technical_scores` (Decided 2026-10-18 "Scorer storage"): same §5.1 sentence.
+   - MTF weights 1/2/3 for 15m/1h/1d (Decided 2026-10-18 "Multi-timeframe"): §5.1 multi-timeframe sentence and Phase 2 task 6.
+   - REGIME_CONFIDENCE as a smoothed top-two gap (Decided 2026-10-18 "REGIME_CONFIDENCE"): §2.3 output bullet.
+   - S/R strength normalisation (Decided 2026-10-18 "Support/resistance"): §5.1 custom-indicator table, S/R row.
+   - Retired-from-index means deactivated (Decided 2026-10-18 "Retired-from-index means deactivated"): Phase 1 task 3.
+
+**Open questions affecting this plan.** These are still under **Pending** in `docs/DECISIONS_PENDING.md`; the plan text they touch is unchanged and not resolved here.
+
+- 2026-10-18 *Holding-period rule*: the `>= 365` days SQL in §4.10 and the 365-day wording in §2.8 and §6.
+- 2026-10-18 *FIFO only vs. specific identification*: §2.8 4e, §6 step 5f, Phase 5d task 13.
+- 2026-10-18 *Transfer expenses on crypto (FLAT term)*: the §2.8 cost table.
+- 2026-10-18 *Tax ledger: rate-regime split inside one FY*, *Tax ledger: exemption amount*, *Tax ledger: crypto before 2022-04-01*: §2.8 4f and §4.10 (BACKLOG: "Align the master plan with the tax decisions").
+- 2026-10-18 *Risk parity = equal risk contribution, not inverse volatility*: §2.7, §6 step 3, Phase 5b task 4.
+- 2026-10-18 *Covariance window and history requirement*: §2.7 Layer 1, §6 step 3.
+- 2026-10-18 *Position and sector caps*: §4.7 `users` defaults, §6 step 3.
+- 2026-10-18 *Evaluation cost per round trip*: the §2.8 "~0.25-0.35%" round-trip cost and §9.4.
+- 2026-10-18 *Quintiles of discrete signals*, *"Promising" rule details*, *Harness finding for you: SIG_RVOL_CONFIRM polarity*, *Point-in-time universe: judgment calls*: §9.4 and the polarity wording in §5.1.
+- 2026-10-18 *Corporate actions: an ex-dated table instead of a periodic `adj_close` re-download*: §9.4 (total-return labels).
+- 2026-10-18 *Index membership: how far back, and temporary members*: §9.4 (point-in-time universe).
+- 2026-10-18 *Regime study: results* (with its 2026-10-19 re-run): §2.3 and §9.4. Options include re-fitting regime thresholds, changing the smoothing span, or a fixed Black-Litterman / risk-parity blend, which would affect §2.7 Layer 2.
+- 2026-10-19 *Polarity variants: harness results*: §5.1 polarity wording and §9.4.
+- 2026-10-19 *Total-return labels: judgment calls*: §9.4.
+- Not decided anywhere: how the combined layer maps the [-1, 1] technical score onto the 0-100 scale used in §4.5, §5.4 and §6 (see the §5.1 note), and the design of the cross-asset-class layer (§6) and of institutional flow (§5.5).
 
 ---
 
@@ -57,7 +93,7 @@ Markets alternate between ordered (trending) and chaotic (random) regimes. This 
 - **Hurst Exponent (H):** Computed on a rolling window. H > 0.5 = trending regime (trust momentum signals, increase position sizes). H ≈ 0.5 = random walk (reduce exposure, tighten stops). H < 0.5 = mean-reverting (consider contrarian signals).
 - **Rolling Lyapunov Exponent:** Measures sensitivity to initial conditions. Spikes indicate high chaos — reduce position sizes and tighten stops.
 - **LSTM/GRU Regime Transition Predictor:** Trained on sequences of market microstructure features to predict regime *transitions* before they happen. Regime changes have precursors: volatility clustering changes shape, sector correlations break down, volume patterns shift. Input features per timestep: rolling volatility (multiple windows), inter-stock correlation matrix changes, volume profile shifts, put-call ratio changes, VIX/India VIX levels, sector rotation patterns, breadth indicators (advance/decline ratio). Target: regime label at t+N (trending / random / mean-reverting), derived from the Hurst exponent computed ex-post. Architecture: LSTM/GRU with sequence length of 20-60 bars → dense layers → softmax over 3 regime classes. Requires 6+ months of accumulated intraday archive for training — system accumulates this archive from day one.
-- **Output:** A regime_confidence multiplier (0 to 1) applied to the technical component of the combined score, and used as adaptive gain scheduling for the PID controller.
+- **Output:** A regime_confidence multiplier (0 to 1) applied to the technical component of the combined score, and used as adaptive gain scheduling for the PID controller. regime_confidence is the top regime score minus the runner-up (ambiguity means low conviction, so the allocator leans to risk parity), smoothed with a causal 5-bar EMA to cut flip churn (which costs tax and fees); the raw gap is kept as `REGIME_CONFIDENCE_RAW`.
 
 **Key insight:** These tools don't tell you what to buy. They tell you how much to trust your other signals right now. This is exactly adaptive gain scheduling in control theory — adjusting controller gains based on plant dynamics.
 
@@ -80,9 +116,9 @@ All three measure serial correlation in returns at different resolutions. The Fa
 
 **Technical Scoring — PCA + XGBoost/LightGBM:**
 
-The confluence scoring problem is fundamentally a feature engineering and selection problem. pandas-ta provides 130+ indicators, but many are correlated (RSI and Stochastic measure similar things, MACD and EMA crossovers overlap). Rather than hand-picking indicators and hand-tuning weights:
+The confluence scoring problem is fundamentally a feature engineering and selection problem. The TA-Lib indicator layer plus our `_extensions.py` provides ~112 indicator columns, but many are correlated (RSI and Stochastic measure similar things, MACD and EMA crossovers overlap). The ML pipeline uses these TA-Lib features (see §5.1). Rather than hand-picking indicators and hand-tuning weights:
 
-1. Compute all 130+ indicators as raw features for each asset at each timestamp
+1. Compute all indicator columns as raw features for each asset at each timestamp
 2. Apply PCA (Principal Component Analysis) to reduce dimensionality — this finds the orthogonal combinations of indicators that explain the most variance in the data, eliminating redundancy
 3. Train XGBoost/LightGBM on the PCA components to predict: "did the stock go up X% in the next N days?"
 4. The model learns which factor combinations are genuinely predictive vs noise
@@ -285,6 +321,12 @@ For crypto assets, traditional financial statement analysis doesn't apply. Inste
 │               BACKEND (FastAPI + APScheduler)            │
 │                                                          │
 │  ┌────────────────────────────────────────────────────┐  │
+│  │     CROSS-ASSET-CLASS ALLOCATION LAYER (top)       │  │
+│  │  Sits above the per-asset-class control loops      │  │
+│  │  Runs daily or when the regime changes             │  │
+│  └────────────┬───────────────────────────────────────┘  │
+│               │                                          │
+│  ┌────────────────────────────────────────────────────┐  │
 │  │          UNIFIED CONTROL LOOP                      │  │
 │  │  Runs every N minutes (N = per asset class)        │  │
 │  │  During market hours (or 24/7 for crypto)          │  │
@@ -310,8 +352,8 @@ For crypto assets, traditional financial statement analysis doesn't apply. Inste
 │      │              │                  │                  │
 │  ┌───┴────┐   ┌─────┴──────┐   ┌──────┴───────┐        │
 │  │TECHNCL │   │FUNDAMENTAL │   │  SENTIMENT   │        │
-│  │ pandas │   │  Buffett   │   │ Reddit + X   │        │
-│  │  -ta   │   │ checklist  │   │  FinBERT     │        │
+│  │ TA-Lib │   │  Buffett   │   │ Reddit + X   │        │
+│  │        │   │ checklist  │   │  FinBERT     │        │
 │  │  +     │   │ (income    │   │ (ProsusAI/   │        │
 │  │conflu- │   │  stmt +    │   │  finbert)    │        │
 │  │ ence   │   │  balance   │   │              │        │
@@ -894,60 +936,71 @@ CREATE TABLE lot_tracking (
 
 ### 5.1 Technical Scoring Engine
 
-**Library:** pandas-ta for standard indicators + custom confluence and regime detection logic.
+**Library:** TA-Lib (C library plus `ta-lib-python`) for standard indicators, with our own `_extensions.py` for indicators TA-Lib lacks, plus custom confluence and regime detection logic. `indicators.py` is the public API (`add_all_indicators`) over `_talib_core.py` and `_extensions.py`.
 
-**Exhaustive Indicator List (pandas-ta 0.3.x):**
+**Why pandas-ta was dropped:** the library is abandoned and has lookahead bias in DPO and Ichimoku. DPO is therefore not implemented, and Ichimoku's Chikou Span is excluded (it is the close shifted back in time, i.e. lookahead); Tenkan, Kijun and Senkou A/B are computed.
 
-**Momentum (38 indicators):**
-AO (Awesome Oscillator), APO (Absolute Price Oscillator), BIAS, BOP (Balance of Power), BRAR (Bull/Bear Ratio), CCI (Commodity Channel Index, period=20), CFO (Chande Forecast Oscillator), CG (Center of Gravity), CMO (Chande Momentum Oscillator), COPPOCK (Coppock Curve), CTI (Correlation Trend Indicator), ER (Efficiency Ratio), ERI (Elder Ray Index — Bull Power + Bear Power), FISHER (Fisher Transform), INERTIA, KDJ (Stochastic with J line), KST (Know Sure Thing), MACD (12,26,9), MOM (Momentum), PGO (Pretty Good Oscillator), PPO (Percentage Price Oscillator), PSL (Psychological Line), PVO (Percentage Volume Oscillator), QQE (Quantitative Qualitative Estimation), ROC (Rate of Change), RSI (14), RSX (Relative Strength Xtra — smoothed RSI), RVGI (Relative Vigor Index), SLOPE (Linear Regression Slope), SMI (Stochastic Momentum Index), STC (Schaff Trend Cycle), STOCH (Stochastic Oscillator 14,3), STOCHRSI (Stochastic RSI), TD_SEQ (Tom DeMark Sequential), TRIX (Triple Exponential Average), TSI (True Strength Index), UO (Ultimate Oscillator), WILLR (Williams %R)
+**Indicator List (TA-Lib + `_extensions.py`):** each family below keeps the original plan list; names under "Not implemented" are not computed by the indicator layer. Column names are a contract (`RSI_14`, `MACD_12_26_9`, ...).
 
-**Overlap / Moving Averages (33 indicators):**
-ALMA (Arnaud Legoux MA), DEMA (Double EMA), EMA (Exponential MA — periods: 5, 8, 13, 20, 50, 100, 200), FWMA (Fibonacci Weighted MA), HILO (Gann High-Low Activator), HL2, HLC3, HMA (Hull MA), HWMA (Holt-Winter MA), ICHIMOKU (Tenkan, Kijun, Senkou A/B, Chikou), JMA (Jurik MA), KAMA (Kaufman Adaptive MA), LINREG (Linear Regression), MCGD (McGinley Dynamic), MIDPOINT, MIDPRICE, OHLC4, PWMA (Pascal's Weighted MA), RMA (Rolling MA / Wilders), SINWMA (Sine Weighted MA), SMA (Simple MA — periods: 5, 10, 20, 50, 100, 200), SSF (Ehlers Super Smoother Filter), SUPERTREND (ATR-based), SWMA (Symmetric Weighted MA), T3 (Tillson T3), TEMA (Triple EMA), TRIMA (Triangular MA), VIDYA (Variable Index Dynamic Average), VWAP (Volume Weighted Average Price), VWMA (Volume Weighted MA), WCP (Weighted Close Price), WMA (Weighted MA), ZLMA (Zero Lag MA)
+**Momentum (38 in the plan list, 15 implemented):**
+Implemented: APO (Absolute Price Oscillator), BOP (Balance of Power), CCI (Commodity Channel Index, period=20), CMO (Chande Momentum Oscillator), MACD (12,26,9), MOM (Momentum), PPO (Percentage Price Oscillator), ROC (Rate of Change), RSI (14), SLOPE (Linear Regression Slope, as `LINEARREG_SLOPE_14`), STOCH (Stochastic Oscillator 14,3), STOCHRSI (Stochastic RSI), TRIX (Triple Exponential Average), UO (Ultimate Oscillator), WILLR (Williams %R)
+Not implemented: AO, BIAS, BRAR, CFO, CG, COPPOCK, CTI, ER, ERI, FISHER, INERTIA, KDJ, KST, PGO, PSL, PVO, QQE, RSX, RVGI, SMI, STC, TD_SEQ, TSI
 
-**Trend (16 indicators):**
-ADX (Average Directional Index, 14), AMAT (Archer Moving Averages Trends), AROON (Aroon Up/Down/Oscillator), CHOP (Choppiness Index), CKSP (Chande Kroll Stop), DECAY (Linear/Exponential Decay), DPO (Detrended Price Oscillator), INCREASING, DECREASING (boolean trend detectors), LONG_RUN, SHORT_RUN (run length indicators), PSAR (Parabolic SAR), QSTICK (Quantitative Candlestick), TTM_TREND (TTM Trend bars), VHF (Vertical Horizontal Filter), VORTEX (Vortex Indicator — VI+ and VI-)
+**Overlap / Moving Averages (33 in the plan list, 17 implemented):**
+Implemented: DEMA (Double EMA), EMA (Exponential MA — periods: 5, 8, 13, 20, 50, 100, 200), HL2 (as `MEDPRICE`), HLC3 (as `TYPPRICE`), ICHIMOKU (Tenkan, Kijun, Senkou A/B; Chikou excluded, see above), KAMA (Kaufman Adaptive MA), LINREG (Linear Regression), MIDPOINT, MIDPRICE, OHLC4 (as `AVGPRICE`), SMA (Simple MA — periods: 5, 10, 20, 50, 100, 200), SUPERTREND (ATR-based), T3 (Tillson T3), TEMA (Triple EMA), TRIMA (Triangular MA), WCP (Weighted Close Price, as `WCLPRICE`), WMA (Weighted MA)
+Not implemented: ALMA, FWMA, HILO, HMA, HWMA, JMA, MCGD, PWMA, RMA, SINWMA, SSF, SWMA, VIDYA, VWAP, VWMA, ZLMA
 
-**Volatility (14 indicators):**
-ABERRATION (Bollinger Band aberration), ACCBANDS (Acceleration Bands), ATR (Average True Range, 14), BBANDS (Bollinger Bands 20,2), DONCHIAN (Donchian Channel), HWCHANNEL (Holt-Winter Channel), KC (Keltner Channel), MASSI (Mass Index), NATR (Normalized ATR), PDIST (Price Distance), RVI (Relative Volatility Index), THERMO (Elder's Thermometer), TRUE_RANGE, UI (Ulcer Index)
+**Trend (16 in the plan list, 4 implemented):**
+Implemented: ADX (Average Directional Index, 14), AROON (Aroon Up/Down/Oscillator), PSAR (Parabolic SAR), VORTEX (Vortex Indicator — VI+ and VI-)
+Not implemented: AMAT, CHOP, CKSP, DECAY, DPO (lookahead), INCREASING, DECREASING, LONG_RUN, SHORT_RUN, QSTICK, TTM_TREND, VHF
 
-**Volume (16 indicators):**
-AD (Accumulation/Distribution), ADOSC (AD Oscillator), AOBV (Archer OBV), CMF (Chaikin Money Flow), EFI (Elder's Force Index), EOM (Ease of Movement), KVO (Klinger Volume Oscillator), MFI (Money Flow Index, 14), NVI (Negative Volume Index), OBV (On-Balance Volume), PVI (Positive Volume Index), PVOL (Price Volume), PVR (Price Volume Rank), PVT (Price Volume Trend), VP (Volume Profile), VWAP (also in Overlap)
+**Volatility (14 in the plan list, 5 implemented):**
+Implemented: ATR (Average True Range, 14), BBANDS (Bollinger Bands 20,2), KC (Keltner Channel), NATR (Normalized ATR), TRUE_RANGE
+Not implemented: ABERRATION, ACCBANDS, DONCHIAN, HWCHANNEL, MASSI, PDIST, RVI, THERMO, UI
 
-**Statistics (10 indicators):**
-ENTROPY, KURTOSIS, MAD (Mean Absolute Deviation), MEDIAN, QUANTILE, SKEW, STDEV, TOS_STDEVALL (ThinkorSwim StdDev), VARIANCE, ZSCORE
+**Volume (16 in the plan list, 5 implemented):**
+Implemented: AD (Accumulation/Distribution), ADOSC (AD Oscillator), MFI (Money Flow Index, 14), OBV (On-Balance Volume), VP (Volume Profile, computed in `support_resistance.py`)
+Not implemented: AOBV, CMF, EFI, EOM, KVO, NVI, PVI, PVOL, PVR, PVT, VWAP (also in Overlap)
 
-**Candle Patterns (12 patterns, computed from OHLC):**
-CDL_DOJI, CDL_INSIDE (Inside Bar), CDL_HAMMER, CDL_HANGINGMAN, CDL_SHOOTINGSTAR, CDL_MARUBOZU_BULL, CDL_MARUBOZU_BEAR, CDL_ENGULFING_BULL, CDL_ENGULFING_BEAR, CDL_HARAMI_BULL, CDL_HARAMI_BEAR, CDL_MORNINGSTAR, CDL_EVENINGSTAR, CDL_PIERCING, CDL_DARKCLOUDCOVER, CDL_SPINNINGTOP, CDL_THREEWHITESOLDIERS, CDL_THREEBLACKCROWS
+**Statistics (10 in the plan list, 2 implemented):**
+Implemented: STDEV (as `STDDEV_20`), VARIANCE (as `VAR_20`)
+Not implemented: ENTROPY, KURTOSIS, MAD, MEDIAN, QUANTILE, SKEW, TOS_STDEVALL, ZSCORE
 
-**Performance (4 metrics):**
+**Candle Patterns (`candle_patterns.py`: all 61 TA-Lib CDL* functions, normalised to -1/0/+1 plus a strength score; computed from OHLC):**
+CDL_DOJI, CDL_HAMMER, CDL_HANGINGMAN, CDL_SHOOTINGSTAR, CDL_MARUBOZU_BULL, CDL_MARUBOZU_BEAR, CDL_ENGULFING_BULL, CDL_ENGULFING_BEAR, CDL_HARAMI_BULL, CDL_HARAMI_BEAR, CDL_MORNINGSTAR, CDL_EVENINGSTAR, CDL_PIERCING, CDL_DARKCLOUDCOVER, CDL_SPINNINGTOP, CDL_THREEWHITESOLDIERS, CDL_THREEBLACKCROWS
+Not implemented: CDL_INSIDE (Inside Bar; TA-Lib has no such function)
+
+**Performance (4 metrics, implemented as `LOGRET_1`, `CUMLOGRET_1`, `PCTRET_1`, `CUMPCTRET_1`):**
 LOG_RETURN, CUMLOG_RETURN, PCT_RETURN, CUMPCT_RETURN
 
-**Cycles (1):**
+**Cycles (1 in the plan list, not implemented):**
 EBSW (Even Better Sine Wave)
 
-**Custom Indicators (not in pandas-ta):**
+**Custom Indicators (not in TA-Lib):**
 
 | Indicator | Implementation | Purpose |
 |---|---|---|
 | Hurst Exponent (rolling 100-bar) | R/S analysis on rolling window | Regime detection |
 | Lyapunov Exponent (simplified) | Divergence rate of nearby trajectories | Chaos detection |
-| Volume-Weighted S/R Zones | Volume profile clustering at price levels | Key levels |
+| Volume-Weighted S/R Zones | Swing-pivot clusters (3/3 pivots, ATR-based cluster tolerance 0.25 × ATR_14, `SR_STRENGTH_*` as a 0–1 share of total recency weight, comparable across assets) plus volume profile (`VP_POS` clipped, `VP_DIST` unclipped in ATR units) | Key levels |
 | Fibonacci Retracement Levels | 23.6%, 38.2%, 50%, 61.8%, 78.6% | Order flow clustering |
 | Multi-Timeframe Alignment Score | Cross-timeframe signal agreement | Confirmation bonus |
 | Squeeze Detector | BB inside KC | Volatility compression → expansion |
-| Divergence Detector (RSI, MACD, OBV) | Price vs indicator divergence | Reversal early warning |
+| Divergence Detector (RSI, MACD, OBV) | Price vs indicator divergence (not implemented) | Reversal early warning |
 
-**Total: ~145 raw features per asset per timestamp.**
+**Total: 112 indicator columns per asset per timestamp from `add_all_indicators`**, plus the candle-pattern, support/resistance and volume-profile, regime and multi-timeframe outputs of their own modules.
 
 **Confluence Scoring (0-100):**
 
-Each indicator generates a sub-signal: bullish (+1), neutral (0), or bearish (-1), weighted by historical reliability. Confluence score = weighted sum, normalized to 0-100.
+Each indicator generates a sub-signal: bullish (+1), neutral (0), or bearish (-1), following momentum and fading to 0 at oscillator extremes (not mean reversion), weighted by historical reliability. The score is damped ×0.5 in chaotic regimes and is NaN until every family is out of warmup. Confluence score = weighted sum, normalized to [-1, 1] and stored in the separate `technical_scores` table (750 daily / 1600 15-minute bar lookback, a daily bar counts from 16:00 IST, stale after 3 business days). The 0-100 `technical_score` of the `scores` table (§4.5) is produced by the combined layer from this value; that mapping is to be designed. Mean-reversion and regime-dependent polarity variants are tested in the harness (§9.4), not chosen by hand.
 
 Initially, confluence weights are hand-configured based on indicator category and known reliability, loaded from a config file. After backtesting generates a labeled dataset, PCA + XGBoost/LightGBM replaces hand-tuned weights with empirically optimized, nonlinear scoring. Same scorer interface, different weight source.
 
-**Multi-Timeframe:** Indicators computed on 15-minute candles (intraday signals), daily candles (trend context), and weekly candles (higher-level confirmation). Score bonus when multiple timeframes agree.
+**Multi-Timeframe:** Indicators computed on 15-minute candles (intraday signals), 1-hour candles, and daily candles (trend context), weighted 1/2/3 so the higher timeframe dominates (less 15m noise, fewer trades, less STCG). Score bonus when multiple timeframes agree.
 
 ### 5.2 Fundamental Scoring Engine
+
+**Point-in-time rule (applies to every sub-score below):** a filing's numbers count only from its publication date, or, conservatively when the publication date is not known, from period end + 45 days (quarterly) / + 60 days (annual), per SEBI LODR Reg. 33. yfinance statements carry period-end dates, not filing dates, so using them as of period end is lookahead. This is a different lag from the 21-day shareholding-filing lag in §5.5. Fundamental scoring is paused until fundamentals are point-in-time.
 
 **Equity — Income Statement Sub-Scores (from Buffett notes):**
 
@@ -1028,6 +1081,18 @@ combined = (adjusted_technical × w_tech) + (fundamental_score × w_fund) + (sen
 ```
 
 Default weights: Technical 50%, Fundamental 30%, Sentiment 20%. Configurable per user via weight_technical, weight_fundamental, weight_sentiment.
+
+### 5.5 Institutional Flow Signals
+
+Status: rules decided, design open, not implemented.
+
+- FII and DII net flow are **always combined, never used alone**.
+- The combined signal **activates only after 3 consecutive days with z-score > 1.5**.
+- Bulk and block deals are **confirmation-only**: they never activate a signal on their own.
+- Shareholding change is a **slow, independent signal**.
+- SEBI LODR shareholding filings lag **21 days** (not 45). This is a separate lag from the financial-results lags in §5.2.
+
+To be designed: data sources, the z-score definition and window, signal weights, and how the signal enters the combined score (§5.4). None of these is decided.
 
 ---
 
@@ -1134,81 +1199,129 @@ EVERY scoring_interval_minutes:
 
 Step 3 (ALLOCATE) runs across all asset classes simultaneously. Even though crypto scores every 5 minutes and equities every 30 minutes, the ideal allocation considers the entire portfolio. If crypto becomes very attractive, the system may suggest reducing equity exposure to free up capital — that's the pigeonhole principle in action.
 
+**Top-level cross-asset-class allocation layer.** A layer above the per-asset-class control loops decides the allocation across asset classes. It is not one of the per-class loops, and it runs daily or when the regime changes. How it splits capital between classes and how the per-class loops consume its output is to be designed; the Step 3 description above predates it.
+
 ---
 
 ## 7. Project Structure
 
+Layout as of 2026-10-19. Modules marked "(planned)" do not exist yet.
+
 ```
-investbot/
-├── config/
-│   ├── settings.py                  # API keys, DB path, defaults
-│   ├── tickers.py                   # NIFTY50 ticker list + metadata
-│   ├── risk_profiles.py             # PID gain presets per risk level
-│   └── tax_regimes.py               # Tax rate tables per country/asset class
-│
-├── data/
-│   ├── db.py                        # SQLite connection, session management
-│   ├── models.py                    # SQLAlchemy ORM (all tables from §4)
-│   ├── ingestion/
-│   │   ├── prices.py                # yfinance daily + intraday pulls
-│   │   ├── financials.py            # yfinance financial statements
-│   │   ├── onchain.py               # Crypto on-chain metrics (Glassnode/CoinGecko)
-│   │   └── sentiment_ingest.py      # Reddit (praw) + Twitter pulls
-│   └── migrations/                  # Schema version tracking
-│
-├── scoring/
-│   ├── technical/
-│   │   ├── indicators.py            # pandas-ta wrapper (all 130+ indicators)
-│   │   ├── confluence.py            # Multi-indicator confluence scoring
-│   │   ├── support_resistance.py    # Volume-weighted S/R + Fibonacci
-│   │   ├── regime.py                # Hurst exponent + Lyapunov
-│   │   ├── multi_timeframe.py       # Daily + Weekly + Intraday alignment
-│   │   └── candle_patterns.py       # Candlestick pattern detection
-│   ├── fundamental/
-│   │   ├── income_stmt.py           # Buffett income statement checklist
-│   │   ├── balance_sheet.py         # Balance sheet scoring
-│   │   ├── cash_flow.py             # Cash flow scoring
-│   │   ├── onchain_scorer.py        # Crypto on-chain fundamental scoring
-│   │   └── scorer.py                # Composite fundamental score (dispatches by asset class)
-│   ├── sentiment/
-│   │   ├── finbert_analyzer.py      # FinBERT scoring + aggregation
-│   │   └── scorer.py                # Daily sentiment score per asset
-│   └── combined.py                  # Weighted composite + regime adjustment
-│
-├── ml/                              # ML upgrade modules
-│   ├── feature_pipeline.py          # Compute 130+ indicators → PCA → feature matrix
-│   ├── confluence_model.py          # XGBoost/LightGBM: PCA features → forward returns
-│   ├── regime_lstm.py               # LSTM/GRU: microstructure sequences → regime prediction
-│   ├── finbert_finetune.py          # Fine-tune FinBERT on Indian market text
-│   └── training.py                  # Training scripts, uses backtest data as training set
-│
-├── trading/
-│   ├── allocator.py                 # Black-Litterman + risk parity blending
-│   ├── pid_controller.py            # PID rebalancing loop
-│   ├── tax_optimizer.py             # Tax filter layer (threshold adjustment, patience, harvesting)
-│   ├── lot_tracker.py               # Lot-level accounting + optimal lot selection
-│   ├── tax_ledger.py                # Fiscal year tax budget tracking
-│   ├── exit_monitor.py              # Trailing SL, support break, catastrophic drop
-│   ├── paper_engine.py              # Execute paper trades, wallet management
-│   ├── risk.py                      # Position sizing, risk parity, limits
-│   └── performance.py               # Win rate, Sharpe, drawdown per user (pre- and post-tax)
-│
-├── dashboard/
-│   └── app.py                       # Streamlit dashboard
-│
-├── backtest/
-│   ├── runner.py                    # Historical replay of full pipeline
-│   ├── metrics.py                   # Full KPI framework (see §9)
-│   ├── parameter_sweep.py           # Multi-profile backtesting
-│   └── report.py                    # Generate backtest results + ML training data
-│
-├── scheduler/
-│   └── jobs.py                      # APScheduler: per-asset-class intervals
-│
-├── main.py                          # FastAPI app + scheduler bootstrap
+investbot/                           # repo root
+├── CLAUDE.md                        # project instructions; wins over this plan where they conflict
+├── README.md
+├── main.py                          # CLI: setup | ingest | run | status | gaps | dq | score | evaluate
 ├── requirements.txt
-└── investbot.db                     # SQLite database
+├── pytest.ini
+├── .env.example                     # settings come from .env (never committed)
+│
+├── investbot/
+│   ├── config/
+│   │   ├── settings.py              # .env settings, DB path, defaults
+│   │   ├── tickers.py               # NIFTY50 ticker list + metadata, RETIRED_TICKERS
+│   │   ├── tax_regimes.py           # Tax rate tables per country/asset class
+│   │   ├── scoring_weights.py       # Confluence family weights
+│   │   ├── index_history/
+│   │   │   └── nifty50_changes.csv  # Sourced NIFTY50 change list (point-in-time membership)
+│   │   └── risk_profiles.py         # (planned) PID gain presets per risk level
+│   │
+│   ├── data/
+│   │   ├── db.py                    # SQLite connection, session management
+│   │   ├── models.py                # SQLAlchemy ORM (tables from §4)
+│   │   ├── seed.py                  # Asset classes, exchanges, assets, tax regimes, index membership
+│   │   ├── quality.py               # Data-quality audit (python main.py dq)
+│   │   ├── corporate_actions.py     # Dividends and splits by ex-date
+│   │   ├── index_membership.py      # As-of index constituent queries
+│   │   ├── ingestion/
+│   │   │   ├── prices.py            # yfinance daily + intraday pulls
+│   │   │   ├── financials.py        # yfinance financial statements
+│   │   │   ├── onchain.py           # (planned) Crypto on-chain metrics (Glassnode/CoinGecko)
+│   │   │   └── sentiment_ingest.py  # (planned) Reddit (praw) + Twitter pulls
+│   │   └── migrations/              # Schema version tracking
+│   │
+│   ├── scoring/
+│   │   ├── technical/
+│   │   │   ├── indicators.py        # Public API (add_all_indicators) over _talib_core.py + _extensions.py
+│   │   │   ├── _talib_core.py       # TA-Lib wrapper
+│   │   │   ├── _extensions.py       # Indicators TA-Lib lacks (Ichimoku without Chikou, Supertrend, Keltner/squeeze, ...)
+│   │   │   ├── candle_patterns.py   # TA-Lib CDL* patterns, normalised
+│   │   │   ├── support_resistance.py # Swing pivots, volume profile, Fibonacci
+│   │   │   ├── regime.py            # Hurst, Lyapunov, trend/range/chaotic labels, regime_confidence
+│   │   │   ├── multi_timeframe.py   # 15m / 1h / daily alignment
+│   │   │   ├── confluence.py        # Family-normalised confluence scoring
+│   │   │   └── scorer.py            # score(ticker): caching and DB I/O (technical_scores)
+│   │   ├── fundamental/
+│   │   │   ├── income_statement.py  # Buffett income statement checklist (composite is a 100% pass-through)
+│   │   │   ├── balance_sheet.py     # (planned) Balance sheet scoring
+│   │   │   ├── cash_flow.py         # (planned) Cash flow scoring
+│   │   │   ├── onchain_scorer.py    # (planned) Crypto on-chain fundamental scoring
+│   │   │   └── scorer.py            # (planned) Composite fundamental score (dispatches by asset class)
+│   │   ├── sentiment/               # Package stub only
+│   │   │   ├── finbert_analyzer.py  # (planned) FinBERT (ProsusAI/finbert) scoring + aggregation
+│   │   │   └── scorer.py            # (planned) Daily sentiment score per asset
+│   │   └── combined.py              # (planned) Weighted composite + regime adjustment
+│   │
+│   ├── evaluation/                  # Walk-forward forward-return harness (§9.4)
+│   │   ├── loader.py                # The only DB access: universe, bars, corporate actions
+│   │   ├── panel.py                 # (date, ticker) features + labels, point-in-time universe
+│   │   ├── labels.py                # Next-open price and total-return labels
+│   │   ├── baselines.py             # Momentum, 12-1 momentum, reversal, low-vol
+│   │   ├── walkforward.py           # Expanding-train / half-year test blocks with embargo
+│   │   ├── stats.py                 # Newey-West, BH q-values, Spearman
+│   │   ├── metrics.py               # IC, quintiles, turnover, costs, held portfolio
+│   │   ├── variants.py              # Pre-registered polarity variants
+│   │   ├── evaluate.py              # Signal x horizon x subset metrics table
+│   │   ├── regime_study.py          # Regime label vs ex-post regime
+│   │   └── report.py                # Markdown report + CSV
+│   │
+│   ├── ml/                          # Package stub only
+│   │   ├── feature_pipeline.py      # (planned) TA-Lib features -> PCA -> feature matrix
+│   │   ├── confluence_model.py      # (planned) XGBoost/LightGBM: PCA features -> forward returns
+│   │   ├── regime_lstm.py           # (planned) LSTM/GRU regime transition prediction
+│   │   ├── finbert_finetune.py      # (planned) Fine-tune FinBERT on Indian market text
+│   │   └── training.py              # (planned) Training scripts, uses backtest data as training set
+│   │
+│   ├── trading/
+│   │   ├── lot_tracker.py           # Lot-level accounting
+│   │   ├── tax_ledger.py            # Fiscal year tax budget tracking
+│   │   ├── tax_rules.py             # Regime parameters, fiscal year, holding-period rule
+│   │   ├── transaction_costs.py     # STT, stamp duty, exchange charges, SEBI fees, GST
+│   │   ├── risk.py                  # Covariance, risk-parity weights, position/sector caps
+│   │   ├── allocator.py             # (planned) Black-Litterman + risk parity blending
+│   │   ├── pid_controller.py        # (planned) PID rebalancing loop
+│   │   ├── tax_optimizer.py         # (planned) Tax filter layer (threshold adjustment, patience, harvesting)
+│   │   ├── exit_monitor.py          # (planned) Trailing SL, support break, catastrophic drop
+│   │   ├── paper_engine.py          # (planned) Execute paper trades, wallet management
+│   │   └── performance.py           # (planned) Win rate, Sharpe, drawdown per user (pre- and post-tax)
+│   │
+│   ├── dashboard/                   # Package stub only
+│   │   └── app.py                   # (planned) Streamlit dashboard
+│   │
+│   ├── backtest/                    # Package stub only
+│   │   ├── runner.py                # (planned) Historical replay of full pipeline
+│   │   ├── metrics.py               # (planned) Full KPI framework (see §9)
+│   │   ├── parameter_sweep.py       # (planned) Multi-profile backtesting
+│   │   └── report.py                # (planned) Backtest results + ML training data
+│   │
+│   └── scheduler/
+│       └── jobs.py                  # APScheduler: per-asset-class intervals, post-close pipeline
+│
+├── scripts/
+│   ├── smoke_indicators.py          # End-to-end indicator smoke test against the real DB
+│   └── regime_study.py              # python -m scripts.regime_study
+│
+├── tests/                           # pytest, no network or DB needed
+├── tools/agents/                    # Autonomous-agent task inbox and runner
+└── docs/
+    ├── investbot_master_plan_v3.md  # This plan (v4.0 content)
+    ├── BACKLOG.md
+    ├── CHANGELOG.md
+    ├── DECISIONS_PENDING.md
+    └── reports/                     # Evaluation and regime-study reports
 ```
+
+The database lives outside the repo at `~/investbot_data/investbot.db` and is never committed.
 
 ---
 
@@ -1221,7 +1334,7 @@ investbot/
 | Database | SQLite (initially) → PostgreSQL | Zero infra, fits 8GB RAM comfortably |
 | ORM | SQLAlchemy | Schema management, easy migration path |
 | Scheduler | APScheduler | In-process, no extra infra needed |
-| Technical Analysis | pandas-ta | 130+ indicators, well-tested, efficient |
+| Technical Analysis | TA-Lib + our `_extensions.py` | Industry-standard C implementation, actively maintained; extensions cover what TA-Lib lacks |
 | Regime Detection | Custom (numpy/scipy) | Hurst exponent, Lyapunov — no library needed |
 | ML — Feature Engineering | scikit-learn (PCA), XGBoost/LightGBM | Dimensionality reduction + nonlinear scoring |
 | ML — Sentiment | FinBERT (ProsusAI/finbert, HuggingFace) | Financial domain transformer, free |
@@ -1333,6 +1446,28 @@ If a metric fails, trace back to the responsible phase:
 - **Settings:** User profile — risk appetite sliders (0-100 per asset class), enable/disable asset classes, scoring weights, tax preferences, ethical filters.
 - **Invest:** Input an amount, see the suggested allocation with tax implications, execute paper trades.
 
+### 9.4 Evaluation Before Tuning: Walk-Forward Forward-Return Harness
+
+TECH_SCORE correlated 0.82 with the past 10-day return and about -0.02 with the next 10 days (RELIANCE, daily): it described the past and did not yet predict. So the forward-return harness comes before more scoring layers, and **weight, threshold and polarity changes need harness evidence, not intuition** (Decided 2026-10-18 "Evaluate before tuning"). It is a signal-level check; the full-pipeline backtest of Phase 7 comes after it. After the harness, the order is: whatever its first report says is most promising, then the batch-scoring path that backtests need, then sentiment and allocation.
+
+What exists (`investbot/evaluation/`, run with `python main.py evaluate [--universe index|active]`):
+
+- **Walk-forward, nothing fitted:** expanding train window, half-year test blocks and an embargo before each block; every signal is evaluated with its designed polarity.
+- **Next-open labels:** the signal is known after the close of day t and entry is at the next open, at several horizons. **Total-return labels** (cash dividends on their ex-dates from `corporate_actions`) are the primary label, with price-only rows alongside.
+- **Point-in-time NIFTY50 universe:** a stock is scored only on dates when it was an index member (`index_membership`); `--universe active` gives today's constituents for comparison ("Universe effect" table).
+- **Metrics:** daily cross-sectional rank IC with Newey-West t-statistics, quintile / top-bucket portfolios, turnover, a cost check and a held (open-to-open) portfolio, regime and year splits, against baselines (momentum, 12-1 momentum, reversal, low-vol).
+- **Multiple testing:** Benjamini-Hochberg q-values over every signal x horizon test.
+- **Pre-registered variants:** alternatives (currently the confluence polarity variants OSC_REVERT, OSC_MOMENTUM and REGIME_POLARITY) are specified before they are looked at and enter the same BH family.
+- **Regime study:** `python -m scripts.regime_study` tests the real-time regime label against the ex-post regime with pre-registered hypotheses, on the same universe and splits.
+
+Reports in `docs/reports/`:
+
+- [`eval_20261018.md`](reports/eval_20261018.md): first harness report (today's constituents), [`eval_20261018_b.md`](reports/eval_20261018_b.md): with the held portfolio, [`eval_20261018_c.md`](reports/eval_20261018_c.md): point-in-time universe
+- [`eval_20261019.md`](reports/eval_20261019.md): pre-registered polarity variants
+- [`regime_study_20261018.md`](reports/regime_study_20261018.md) and [`regime_study_20261019.md`](reports/regime_study_20261019.md) (point-in-time universe): regime label vs the ex-post regime
+
+What these reports mean for weights, polarity and the regime layer is decided by Ankit and tracked in `docs/DECISIONS_PENDING.md`, not in this plan.
+
 ---
 
 ## 10. Phase Plan
@@ -1344,7 +1479,7 @@ If a metric fails, trace back to the responsible phase:
 **Tasks:**
 1. Project structure, venv, requirements.txt
 2. SQLAlchemy models for ALL tables (including tax, lot tracking, on-chain — schema-complete from day one)
-3. Seed database: asset_classes (equity, crypto), exchanges (NSE, BINANCE), assets (NIFTY50 tickers including ~6 recently delisted for historical coverage)
+3. Seed database: asset_classes (equity, crypto), exchanges (NSE, BINANCE), assets (NIFTY50 tickers; names that left the index are kept with `is_active = FALSE`, so price history is kept but the allocator and scorer stop considering them)
 4. Price ingestion: 2+ years daily OHLCV + 60 days of 15-minute intraday via yfinance
 5. Financial ingestion: available annual/quarterly financials via yfinance
 6. Populate financial_data_availability
@@ -1361,12 +1496,12 @@ If a metric fails, trace back to the responsible phase:
 **Objective:** Given any asset with price data, produce a technical score (0-100) with signal reasoning, on both daily and intraday timeframes.
 
 **Tasks:**
-1. pandas-ta integration: compute all indicators from §5.1 exhaustive list
+1. TA-Lib integration: compute the implemented indicators from the §5.1 list (`indicators.py` over `_talib_core.py` + `_extensions.py`)
 2. Confluence scoring: each indicator → sub-signal → weighted sum → normalized score
 3. Volume-weighted support/resistance zone detection
 4. Fibonacci retracement level computation
 5. Candlestick pattern detection (all patterns listed in §5.1)
-6. Multi-timeframe module: intraday (15m) + daily + weekly alignment
+6. Multi-timeframe module: 15m + 1h + daily alignment, weighted 1/2/3
 7. Regime detection: rolling Hurst exponent (multiple window sizes: 50, 100, 200 bars), simplified Lyapunov estimate
 8. Technical scorer: price_data → (technical_score, regime_confidence, signal_reasons)
 9. Cache indicators in indicator_cache table
@@ -1378,6 +1513,8 @@ If a metric fails, trace back to the responsible phase:
 ---
 
 ### Phase 3 — Fundamental Scoring Engine (~1-2 weeks)
+
+**Status: paused** until fundamentals are point-in-time (§5.2); the evaluation harness precondition is met (§9.4). Every fundamental input counts only from the filing's publication date, or conservatively from period end + 45 days (quarterly) / + 60 days (annual), per SEBI LODR Reg. 33; yfinance gives period ends, not filing dates. Balance-sheet and cash-flow rules also wait for Ankit's notes.
 
 **Objective:** Income statement scoring implemented per Buffett checklist. Balance sheet and cash flow sub-scores stubbed (return 100%) until book notes completed. Composite fundamental score returns 100% pass-through initially; income statement sub-scores computed and stored for analysis.
 

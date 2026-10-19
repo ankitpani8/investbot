@@ -10,7 +10,8 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] Constituent sync is manual; add a periodic check of `ind_nifty50list.csv` against `NIFTY50_TICKERS` (NSE reconstitutes in March and September). Source used: https://archives.nseindia.com/content/indices/ind_nifty50list.csv (the niftyindices.com URL timed out).
 - [x] Remove the duplicate `investbot/scoring/technical/smoke_indicators.py` (`agent/005-housekeeping`)
 - [x] pytest promotes FutureWarning to error (`agent/005-housekeeping`)
-- [ ] Update `docs/investbot_master_plan_v3.md` to v4: TA-Lib instead of pandas-ta, institutional flow signals, the cross-asset-class allocation layer, the 21-day LODR lag.
+- [x] Update `docs/investbot_master_plan_v3.md` to v4: TA-Lib instead of pandas-ta, institutional flow signals (new §5.5), the cross-asset-class allocation layer (§3, §6), evaluation before tuning (new §9.4), point-in-time fundamentals (§5.2, Phase 3), the real project layout (§7) and the decided entries that change plan text; Pending entries are listed as open questions, not resolved (`agent/280-master-plan-v4`)
+- [ ] Master plan v4 leftovers (left unchanged on purpose, docs only): Phase 7 task 9 still says "145+ features", and Phase 2's objective and §6 still say 0-100 technical scores; the combined layer's mapping from the [-1, 1] `technical_scores.tech_score` to the 0-100 scale of §4.5 / §5.4 / §6 needs a decision; the §5.1 custom-indicator row for Hurst says R/S analysis although `regime.py` uses rolling DFA, and Phase 2 task 7 lists Hurst windows 50/100/200 although production uses window 100.
 
 ## Data quality
 - [x] Reject incomplete OHLC rows at ingestion, add `python main.py dq [--purge]`, clean existing rows (`agent/fix-daily-nan`)
