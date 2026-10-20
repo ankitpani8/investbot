@@ -48,6 +48,7 @@ from investbot.evaluation.evaluate import (
     PRIMARY_RETURN,
     PROMISING_Q,
     PROMISING_SIGN_SHARE,
+    ROBUST_COLUMNS,
     ROBUST_TIMING_KEY,
     evaluate,
     headline,
@@ -731,6 +732,17 @@ def robust_section(table: pd.DataFrame, info: RunInfo | None = None) -> str:
         out.append(f"{_FAMILY_NAMES.get(label, label)}: every test promising under any rule, "
                    "plus TECH_SCORE at every horizon.\n")
         out.append(_table(robust_rows(fam), _ROBUST_COLS))
+    m = max(len(f) for f in fams.values())
+    floor = 1.0 / (1.0 + ROBUST_BOOT_N)
+    out.append(f"Resolution of the bootstrap p-value: with {ROBUST_BOOT_N} draws p boot ≥ "
+               f"1 / {ROBUST_BOOT_N + 1} = {floor:.5f}, so in a family of {m} tests the "
+               f"smallest attainable q boot is {m} / {ROBUST_BOOT_N + 1} = {m * floor:.3f}, and "
+               f"q boot < {PROMISING_Q:.2f} for the top-ranked test needs p boot < "
+               f"{PROMISING_Q / m:.5f}, i.e. **no** draw as extreme as the observed mean "
+               f"(one such draw gives q {2 * m * floor:.3f}). For the strongest test the boot "
+               "verdict is therefore a 0-versus-1 count out of "
+               f"{ROBUST_BOOT_N} draws; read it as \"at the resolution limit\", not as evidence "
+               "against the test. The draw count is pre-registered and was not changed.\n")
     out.append("**The verdict rule is unchanged**: `promising` (and every section above and "
                "below) still uses `ic_q` from the fixed lag h − 1. The auto and boot columns are a "
                "pre-registered robustness check, not a new rule; switching the rule is a separate "
@@ -1166,6 +1178,9 @@ def run_evaluation(
     out = table.assign(universe=universe)
     if compare is not None:
         out = pd.concat([out, compare.assign(universe="active")], ignore_index=True)
+    # the robust columns go last, so every pre-task-340 column keeps its position in the CSV
+    out = out[[c for c in out.columns if c not in ROBUST_COLUMNS]
+              + [c for c in ROBUST_COLUMNS if c in out.columns]]
     out.to_csv(csv, index=False)
     report.write_text(render_report(table, splits, info, report_date, compare), encoding="utf-8")
     return report, csv, table, info

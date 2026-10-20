@@ -309,6 +309,8 @@ def test_robust_section_and_its_place_in_the_report(tables):
     assert text.startswith("## IC inference robustness (pre-registered)")
     assert "**The verdict rule is unchanged**" in text
     assert "Runtime of the robust step: 1.2 s for 8 tests" in text
+    m = len(t[(t["label"] == "open") & (t["subset"] == "oos")])
+    assert f"smallest attainable q boot is {m} / {ROBUST_BOOT_N + 1}" in text
     head = t[(t["label"] == "open") & (t["subset"] == "oos")]
     assert f"Headline family (next-open, primary return): {len(head)} tests" in text
     rows = robust_rows(head)

@@ -123,6 +123,8 @@ BH_LABELS: tuple[str, ...] = ("open", COMPARISON_RETURN)
 ROBUST_VERDICT_COLUMNS: tuple[tuple[str, object], ...] = (
     ("ic_q_auto", np.nan), ("ic_q_boot", np.nan),
     ("promising_auto", False), ("promising_boot", False))
+#: Every column the robust step appends, in table order.
+ROBUST_COLUMNS: tuple[str, ...] = (*ROBUST_KEYS, *(c for c, _ in ROBUST_VERDICT_COLUMNS))
 #: ``timings`` key of the robust IC step (seconds, summed over calls).
 ROBUST_TIMING_KEY: str = "robust_ic"
 
