@@ -28,6 +28,7 @@ from investbot.evaluation.metrics import (
     ROBUST_KEYS,
     ROBUST_MAX_LAG_FRAC,
     ROBUST_RHO_CLIP,
+    SURVIVORSHIP_KEYS,
     ic_robust,
     ic_summary,
 )
@@ -227,9 +228,9 @@ NEW_COLUMNS = (*ROBUST_KEYS, *(c for c, _ in ROBUST_VERDICT_COLUMNS))
 
 def test_existing_columns_identical_with_robust_step_disabled(tables):
     t, base, timings = tables
-    old = [c for c in t.columns if c not in NEW_COLUMNS]
-    # new columns are appended after every existing column
-    assert list(t.columns) == [*old, *NEW_COLUMNS]
+    old = [c for c in t.columns if c not in (*NEW_COLUMNS, *SURVIVORSHIP_KEYS)]
+    # new columns are appended after every existing column (the task-420 survivorship split last)
+    assert list(t.columns) == [*old, *NEW_COLUMNS, *SURVIVORSHIP_KEYS]
     pd.testing.assert_frame_equal(t[old], base[old], check_exact=True)
     assert base[list(ROBUST_KEYS) + ["ic_q_auto", "ic_q_boot"]].isna().all().all()
     assert not base["promising_auto"].any() and not base["promising_boot"].any()

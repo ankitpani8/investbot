@@ -13,7 +13,7 @@ import pytest
 
 from investbot.evaluation.evaluate import evaluate, headline
 from investbot.evaluation.labels import HORIZONS, PRICE_STEMS, TR_STEMS, label_columns
-from investbot.evaluation.metrics import HELD_KEYS, ROBUST_KEYS
+from investbot.evaluation.metrics import HELD_KEYS, ROBUST_KEYS, SURVIVORSHIP_KEYS
 
 START = "2023-01-02"
 N_BARS = 330
@@ -119,8 +119,10 @@ GOLDEN_PANEL = {"shape": [580, 44], "feat_sum": -2967.6614279902037,
 
 def eval_fingerprint(table: pd.DataFrame) -> dict:
     # the golden sum predates the task-270 KPI columns; those are pinned in test_evaluation_performance
-    # and the task-340 robust IC columns (pinned in test_evaluation_robust_ic)
-    new = {f"held_{k}" for k in HELD_KEYS[8:]} | set(ROBUST_KEYS) | {"ic_q_auto", "ic_q_boot"}
+    # and the task-340 robust IC columns (pinned in test_evaluation_robust_ic) and the task-420
+    # survivorship split (pinned in test_evaluation)
+    new = ({f"held_{k}" for k in HELD_KEYS[8:]} | set(ROBUST_KEYS) | {"ic_q_auto", "ic_q_boot"}
+           | set(SURVIVORSHIP_KEYS))
     num = table.drop(columns=list(new & set(table.columns))).select_dtypes(
         include=[np.number]).to_numpy(dtype=np.float64)
     h = headline(table).set_index(["signal", "horizon"])
