@@ -1,4 +1,48 @@
 effective_date,action,ticker,name,source,note
+2013-09-27,remove,RELINFRA.NS,Reliance Infrastructure,https://www.niftyindices.com/Press_Release/ind_prs27082013.pdf,
+2013-09-27,add,WIPRO.NS,Wipro,https://www.niftyindices.com/Press_Release/ind_prs27082013.pdf,
+2014-03-28,remove,JPASSOCIAT.NS,Jaiprakash Associates,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,
+2014-03-28,remove,RANBAXY.NS,Ranbaxy Laboratories,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,release symbol; current Yahoo symbol not verified
+2014-03-28,add,TECHM.NS,Tech Mahindra,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,
+2014-03-28,add,MCDOWELL-N.NS,United Spirits,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,release symbol; current Yahoo symbol not verified
+2014-09-19,remove,MCDOWELL-N.NS,United Spirits,https://www.niftyindices.com/Press_Release/ind_prs20082014.pdf,release symbol; current Yahoo symbol not verified
+2014-09-19,add,ZEEL.NS,Zee Entertainment Enterprises,https://www.niftyindices.com/Press_Release/ind_prs20082014.pdf,
+2015-03-27,remove,DLF.NS,DLF,https://www.niftyindices.com/Press_Release/ind_prs20022015.pdf,
+2015-03-27,remove,JINDALSTEL.NS,Jindal Steel & Power,https://www.niftyindices.com/Press_Release/ind_prs20022015.pdf,
+2015-03-27,add,IDEA.NS,Idea Cellular,https://www.niftyindices.com/Press_Release/ind_prs20022015.pdf,release symbol; current Yahoo symbol not verified
+2015-03-27,add,YESBANK.NS,Yes Bank,https://www.niftyindices.com/Press_Release/ind_prs20022015.pdf,
+2015-05-29,remove,IDFC.NS,IDFC,https://www.niftyindices.com/Press_Release/ind_prs29042015.pdf,release symbol; current Yahoo symbol not verified
+2015-05-29,add,BOSCHLTD.NS,Bosch,https://www.niftyindices.com/Press_Release/ind_prs29042015.pdf,
+2015-09-28,remove,NMDC.NS,NMDC,https://www.niftyindices.com/Press_Release/ind_prs12082015.pdf,
+2015-09-28,add,ADANIPORTS.NS,Adani Ports and Special Economic Zone,https://www.niftyindices.com/Press_Release/ind_prs12082015.pdf,
+2016-04-01,remove,CAIRN.NS,Cairn India,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,release symbol; current Yahoo symbol not verified
+2016-04-01,remove,PNB.NS,Punjab National Bank,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
+2016-04-01,remove,VEDL.NS,Vedanta,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
+2016-04-01,add,AUROPHARMA.NS,Aurobindo Pharma,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
+2016-04-01,add,INFRATEL.NS,Bharti Infratel,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
+2016-04-01,add,EICHERMOT.NS,Eicher Motors,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
+2016-04-01,add,TATAMTRDVR.NS,Tata Motors (DVR),https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,"temporary 51st member: differential-voting-rights share class added as an additional security (the release says the index then has 51 securities); in the index until its exclusion on 2017-09-29. The ordinary shares (TATAMOTORS, now TMPV.NS) were a member throughout; release symbol; current Yahoo symbol not verified"
+2017-03-31,remove,BHEL.NS,Bharat Heavy Electricals,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,
+2017-03-31,remove,IDEA.NS,Idea Cellular,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,release symbol; current Yahoo symbol not verified
+2017-03-31,add,IBULHSGFIN.NS,Indiabulls Housing Finance,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,
+2017-03-31,add,IOC.NS,Indian Oil Corporation,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,
+2017-05-26,remove,GRASIM.NS,Grasim Industries,https://www.niftyindices.com/Press_Release/ind_prs27042017.pdf,
+2017-05-26,add,VEDL.NS,Vedanta,https://www.niftyindices.com/Press_Release/ind_prs27042017.pdf,
+2017-09-29,remove,ACC.NS,ACC,https://www.niftyindices.com/Press_Release/ind_prs28082017.pdf,
+2017-09-29,remove,BANKBARODA.NS,Bank of Baroda,https://www.niftyindices.com/Press_Release/ind_prs28082017.pdf,
+2017-09-29,remove,TATAPOWER.NS,Tata Power Company,https://www.niftyindices.com/Press_Release/ind_prs28082017.pdf,
+2017-09-29,remove,TATAMTRDVR.NS,Tata Motors (DVR),https://www.niftyindices.com/Press_Release/ind_prs28082017.pdf,temporary member excluded; release symbol; current Yahoo symbol not verified
+2017-09-29,add,BAJFINANCE.NS,Bajaj Finance,https://www.niftyindices.com/Press_Release/ind_prs28082017.pdf,
+2017-09-29,add,HINDPETRO.NS,Hindustan Petroleum Corporation,https://www.niftyindices.com/Press_Release/ind_prs28082017.pdf,
+2017-09-29,add,UPL.NS,UPL,https://www.niftyindices.com/Press_Release/ind_prs28082017.pdf,
+2018-04-02,remove,AMBUJACEM.NS,Ambuja Cements,https://www.niftyindices.com/Press_Release/ind_prs21022018.pdf,
+2018-04-02,remove,AUROPHARMA.NS,Aurobindo Pharma,https://www.niftyindices.com/Press_Release/ind_prs21022018.pdf,
+2018-04-02,remove,BOSCHLTD.NS,Bosch,https://www.niftyindices.com/Press_Release/ind_prs21022018.pdf,
+2018-04-02,add,BAJAJFINSV.NS,Bajaj Finserv,https://www.niftyindices.com/Press_Release/ind_prs21022018.pdf,
+2018-04-02,add,GRASIM.NS,Grasim Industries,https://www.niftyindices.com/Press_Release/ind_prs21022018.pdf,
+2018-04-02,add,TITAN.NS,Titan Company,https://www.niftyindices.com/Press_Release/ind_prs21022018.pdf,
+2018-09-28,remove,LUPIN.NS,Lupin,https://www.niftyindices.com/Press_Release/ind_prs28082018.pdf,
+2018-09-28,add,JSWSTEEL.NS,JSW Steel,https://www.niftyindices.com/Press_Release/ind_prs28082018.pdf,
 2019-03-29,remove,HINDPETRO.NS,Hindustan Petroleum Corporation,https://www.niftyindices.com/Press_Release/ind_prs25022019.pdf,
 2019-03-29,add,BRITANNIA.NS,Britannia Industries,https://www.niftyindices.com/Press_Release/ind_prs25022019.pdf,
 2019-09-27,remove,IBULHSGFIN.NS,Indiabulls Housing Finance,https://www.niftyindices.com/Press_Release/ind_prs28082019.pdf,

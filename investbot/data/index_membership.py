@@ -23,6 +23,15 @@ Temporary members: when a NIFTY50 constituent demerges, the spun-off company is
 added at zero price under a dummy symbol and dropped a few sessions after it
 lists (JIOFIN 2023, ITCHOTELS 2025, TMCV 2025, KWIL 2025-26). The index then
 holds 51 names; those windows are marked `temporary` in the CSV note column.
+The same holds for 2016-04-01 .. 2017-09-28, when the Tata Motors DVR share class
+(TATAMTRDVR) was an additional security: the release says the index "shall have
+51 securities". It is a separate ticker and is marked `temporary` for the same reason.
+
+Source chain: every NIFTY 50 change is read from the NSE Indices press releases (niftyindices.com
+`Press_Release/*.pdf`; before the 2015 rebrand the index is "CNX Nifty"). The chain runs from the
+2013-08-27 release (effective 2013-09-27) to the current list and is gap-free: the reverse walk
+from today's list never contradicts a change and gives 50 names (51 in the `temporary` windows)
+on every day. Releases before 2013-08 were not read.
 
 Symbols are the press-release symbol plus `.NS`; one company keeps one ticker
 (ZOMATO is ETERNAL.NS; TATAMOTORS.NS is TMPV.NS, which never left the index).
@@ -50,10 +59,11 @@ NIFTY50_CHANGES_CSV = CHANGES_DIR / "nifty50_changes.csv"
 
 # NIFTY50_TICKERS is the list as of this date; bump it with the list and append the changes.
 CURRENT_AS_OF = date(2026, 10, 18)
-# Start of the studied window; the start of stints that began earlier is unknown.
-HISTORY_START = date(2019, 1, 1)
+# Start of the studied window (the first read release, 2013-08-27, rounded down to the 1st of its
+# month); the start of stints that began earlier is unknown.
+HISTORY_START = date(2013, 8, 1)
 # Earliest date from which every later change is sourced (the first sourced change).
-COMPLETE_FROM = date(2019, 3, 29)
+COMPLETE_FROM = date(2013, 9, 27)
 
 CURRENT_LIST_SOURCE = "investbot/config/tickers.py NIFTY50_TICKERS (NSE ind_nifty50list.csv, 2026-10-18)"
 

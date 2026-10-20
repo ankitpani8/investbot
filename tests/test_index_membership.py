@@ -121,8 +121,10 @@ def test_changes_after_as_of_are_ignored():
 def test_completeness_flag():
     assert not im.is_complete(im.COMPLETE_FROM - pd.Timedelta(days=1).to_pytimedelta())
     assert im.is_complete(im.COMPLETE_FROM)
-    mask = im.complete_mask(pd.bdate_range("2019-03-25", "2019-04-02"))
-    assert list(mask) == [False, False, False, False, True, True, True]
+    around = pd.bdate_range(im.COMPLETE_FROM - pd.Timedelta(days=4), im.COMPLETE_FROM + pd.Timedelta(days=4))
+    mask = im.complete_mask(around)
+    assert list(mask) == [d >= pd.Timestamp(im.COMPLETE_FROM) for d in around]
+    assert mask.any() and not mask.all()
 
 
 # ──────────────────────────────────────────────────────────
@@ -139,9 +141,11 @@ def intervals():
     return im.nifty50_intervals()
 
 
-# (first, last) sessions with a temporary 51st member: a demerged company held at zero
-# price under a dummy symbol (JIOFIN 2023, ITC Hotels 2025, TMCV 2025, Kwality Wall's 2025-26)
+# (first, last) sessions with a temporary 51st member: the Tata Motors DVR share class as an
+# additional security (2016-04-01 .. 2017-09-28), then demerged companies held at zero price
+# under a dummy symbol (JIOFIN 2023, ITC Hotels 2025, TMCV 2025, Kwality Wall's 2025-26)
 TEMPORARY_51ST = [
+    (D(2016, 4, 1), D(2017, 9, 28)),
     (D(2023, 7, 20), D(2023, 9, 6)),
     (D(2025, 1, 6), D(2025, 2, 7)),
     (D(2025, 10, 14), D(2025, 11, 14)),
@@ -187,14 +191,70 @@ def test_known_changes_on_boundary_dates(intervals):
     assert "TMCV.NS" not in im.members_as_of(intervals, D(2025, 11, 17))
 
 
+def _on(intervals, d):
+    return im.members_as_of(intervals, d)
+
+
+def test_pre_2019_changes_match_the_releases(intervals):
+    """Members the day before and on the first day of a change, as the press release lists it.
+
+    ind_prs21022018.pdf (NIFTY 50, effective 2018-04-02): out AMBUJACEM, AUROPHARMA, BOSCHLTD;
+    in BAJAJFINSV, GRASIM, TITAN.
+    ind_prs22022016_2.pdf (effective 2016-04-01): out CAIRN, PNB, VEDL; in AUROPHARMA, INFRATEL,
+    EICHERMOT and the Tata Motors DVR, so the index has 51 securities.
+    ind_prs27082013.pdf (effective 2013-09-27, the start of the chain): RELINFRA out, WIPRO in.
+    """
+    out_2018 = {"AMBUJACEM.NS", "AUROPHARMA.NS", "BOSCHLTD.NS"}
+    in_2018 = {"BAJAJFINSV.NS", "GRASIM.NS", "TITAN.NS"}
+    before, on = _on(intervals, D(2018, 4, 1)), _on(intervals, D(2018, 4, 2))  # Sunday, Monday
+    assert out_2018 <= before and not in_2018 & before and len(before) == 50
+    assert in_2018 <= on and not out_2018 & on and len(on) == 50
+    assert _on(intervals, D(2018, 3, 28)) == before  # nothing in between
+
+    out_2016 = {"CAIRN.NS", "PNB.NS", "VEDL.NS"}
+    in_2016 = {"AUROPHARMA.NS", "INFRATEL.NS", "EICHERMOT.NS", "TATAMTRDVR.NS"}
+    before, on = _on(intervals, D(2016, 3, 31)), _on(intervals, D(2016, 4, 1))
+    assert out_2016 <= before and not in_2016 & before and len(before) == 50
+    assert in_2016 <= on and not out_2016 & on and len(on) == 51
+
+    before, on = _on(intervals, D(2013, 9, 26)), _on(intervals, D(2013, 9, 27))
+    assert "RELINFRA.NS" in before and "WIPRO.NS" not in before and len(before) == 50
+    assert "WIPRO.NS" in on and "RELINFRA.NS" not in on and len(on) == 50
+    assert im.is_complete(D(2013, 9, 27)) and not im.is_complete(D(2013, 9, 26))
+
+
+def test_members_as_of_pre_2019_uses_only_changes_up_to_d(changes):
+    """Forward replay of the changes dated <= d from the initial set equals members_as_of(d).
+
+    The same truncation property as the toy test, on the real pre-2019 chain: a later change
+    can never leak into an earlier date. Checked on both sides of every pre-2019 change date.
+    """
+    iv = im.nifty50_intervals()
+    initial = im.members_as_of(iv, im.HISTORY_START)
+    pre = changes[changes["effective_date"] < D(2019, 1, 1)]
+    assert len(pre) > 20
+    probes = {D(2013, 8, 1), D(2018, 12, 31)}
+    for d in set(pre["effective_date"]):
+        probes |= {d - pd.Timedelta(days=1).to_pytimedelta(), d}
+    for d in sorted(probes):
+        state = set(initial)
+        for c in changes[changes["effective_date"] <= d].sort_values("effective_date", kind="stable").itertuples():
+            state.add(c.ticker) if c.action == "add" else state.remove(c.ticker)
+        assert im.members_as_of(iv, d) == state, d
+
+
 def test_csv_shape_and_sources(changes):
     assert list(changes.columns[:5]) == ["effective_date", "action", "ticker", "name", "source"]
     assert set(changes["action"]) == {"add", "remove"}
     assert not changes.duplicated(["effective_date", "ticker"]).any()
-    assert changes["source"].str.startswith("https://").all()
+    assert changes["source"].str.startswith("https://www.niftyindices.com/Press_Release/ind_prs").all()
+    assert changes["source"].str.endswith(".pdf").all()
     assert (changes["source"].str.strip() != "").all() and (changes["name"].str.strip() != "").all()
     assert changes["ticker"].str.endswith(".NS").all()
-    assert changes["effective_date"].min() >= im.COMPLETE_FROM
+    assert changes["effective_date"].min() == im.COMPLETE_FROM
+    # the first release read is dated in the month HISTORY_START opens
+    assert im.HISTORY_START.day == 1 and im.HISTORY_START < im.COMPLETE_FROM
+    assert (im.COMPLETE_FROM - im.HISTORY_START).days < 62
 
 
 def test_csv_changes_are_consistent_forward(changes):
@@ -215,7 +275,7 @@ def test_csv_changes_are_consistent_forward(changes):
 
 def test_temporary_members_are_flagged_in_the_csv(changes):
     flagged = changes[changes["note"].str.startswith("temporary")]
-    assert set(flagged["ticker"]) == {"JIOFIN.NS", "ITCHOTELS.NS", "TMCV.NS", "KWIL.NS"}
+    assert set(flagged["ticker"]) == {"JIOFIN.NS", "ITCHOTELS.NS", "TMCV.NS", "KWIL.NS", "TATAMTRDVR.NS"}
     assert set(flagged["action"]) == {"add", "remove"}
 
 
