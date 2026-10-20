@@ -149,6 +149,7 @@ Point-in-time universe
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -523,6 +524,38 @@ def _summary(x: pd.Series, lag: int) -> dict[str, float]:
             "t_nw": t, "p": normal_pvalue(t)}
 
 
+def robust_summary(x: pd.Series, horizon: int) -> dict[str, float]:
+    """
+    The pre-registered robust inference (task 350, module docstring) on the finite
+    values of a per-date series, as ``_summary``; keys ``ROBUST_COLUMNS``. ``horizon``
+    is H, the lag of the existing summary (never less: ``lag_auto >= H``).
+    """
+    a = np.asarray(x, dtype=np.float64).ravel()
+    a = a[np.isfinite(a)]
+    n = a.size
+    lag = max(int(horizon), andrews_bartlett_lag(a, min_lag=int(horizon),
+                                                 max_lag_frac=ROBUST_MAX_LAG_FRAC))
+    t = newey_west_tstat(a, lag)
+    block = max(int(horizon), lag + 1, round(n ** (1.0 / 3.0)))
+    p_boot = (block_bootstrap_mean_pvalue(a, block, ROBUST_BOOT_N, ROBUST_BOOT_SEED)
+              if n >= BOOTSTRAP_MIN_PERIODS else math.nan)
+    return {"acf1": acf(a, (1,))[1], "lag_auto": lag, "t_auto": t, "p_auto": normal_pvalue(t),
+            "boot_block": block, "p_boot": p_boot}
+
+
+#: Seconds spent in ``robust_summary`` by the test functions (only read for the runtime line).
+_ROBUST_CLOCK: list[float] = [0.0]
+
+
+def _robust(x, horizon: int, robust: bool) -> dict[str, float]:
+    if not robust:
+        return {}
+    t0 = time.monotonic()
+    out = robust_summary(x, horizon)
+    _ROBUST_CLOCK[0] += time.monotonic() - t0
+    return out
+
+
 def block_sign_share(x: pd.Series, splits: list[Split], expected_sign: int) -> float:
     """Share of test blocks (with data) whose mean of ``x`` has ``expected_sign``."""
     means = []
@@ -647,8 +680,10 @@ class StudyResult:
 def conditional_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame],
                       dates, splits: list[Split], horizons=REGIME_HORIZONS,
                       hurst_window: int = EX_POST_HURST_WINDOW,
-                      min_names: int = MIN_GROUP_NAMES) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(tests, per-label means) of the pre-registered conditional-mean hypotheses H1-H3."""
+                      min_names: int = MIN_GROUP_NAMES,
+                      robust: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(tests, per-label means) of the pre-registered conditional-mean hypotheses H1-H3.
+    ``robust`` appends ``ROBUST_COLUMNS`` (``robust_summary`` of the same series)."""
     labels = features["REGIME"].loc[features["REGIME"].index.isin(dates)]
     tests = [(g, c, s, e) for g, c, s, e in CONDITIONAL_TESTS]
     tests.insert(3, ("H1", "trend − range", "HURST", +1))
@@ -660,7 +695,8 @@ def conditional_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.D
             d = group_difference(labels, y, a, b, min_names)
             rows.append({"section": "conditional", "group": group, "name": comp, "target": col,
                          "horizon": h, "expected_sign": sign, **_summary(d, h),
-                         "block_share": block_sign_share(d, splits, sign)})
+                         "block_share": block_sign_share(d, splits, sign),
+                         **_robust(d, h, robust)})
             m = {"target": col, "horizon": h}
             for code, name in REGIME_NAMES.items():
                 g = group_mean(labels, y, (code,), min_names).to_numpy()
@@ -672,8 +708,9 @@ def conditional_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.D
 
 
 def rank_tests(features, targets, dates, splits, horizons=REGIME_HORIZONS,
-               hurst_window: int = EX_POST_HURST_WINDOW) -> pd.DataFrame:
-    """Daily Spearman IC (``metrics.daily_ic``, NW lag H) of the pre-registered H4 pairs."""
+               hurst_window: int = EX_POST_HURST_WINDOW, robust: bool = False) -> pd.DataFrame:
+    """Daily Spearman IC (``metrics.daily_ic``, NW lag H) of the pre-registered H4 pairs.
+    ``robust`` appends ``ROBUST_COLUMNS`` (``robust_summary`` of the same IC series)."""
     rows = []
     for sig, stem, sign in RANK_TESTS:
         S = features[sig].loc[features[sig].index.isin(dates)]
@@ -684,13 +721,16 @@ def rank_tests(features, targets, dates, splits, horizons=REGIME_HORIZONS,
             rows.append({"section": "rank", "group": "H4", "name": sig, "target": col,
                          "horizon": h, "expected_sign": sign, "n_days": s["n_days"],
                          "mean": s["ic_mean"], "t_nw": s["ic_t_nw"], "p": s["ic_p"],
-                         "block_share": block_sign_share(ic, splits, sign)})
+                         "block_share": block_sign_share(ic, splits, sign),
+                         **_robust(ic, h, robust)})
     return pd.DataFrame(rows)
 
 
 def calibration_tests(features, targets, dates, splits, horizons=REGIME_HORIZONS,
-                      spans=CONFIDENCE_SPANS) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """(H5 IC tests, mean HIT by confidence quintile, churn) for every span."""
+                      spans=CONFIDENCE_SPANS, robust: bool = False
+                      ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """(H5 IC tests, mean HIT by confidence quintile, churn) for every span.
+    ``robust`` appends ``ROBUST_COLUMNS`` to the tests (same IC series)."""
     labels = features["REGIME"].loc[features["REGIME"].index.isin(dates)]
     tr = labels.isin([TREND, RANGE])
     rows, quint, churn = [], [], []
@@ -705,7 +745,8 @@ def calibration_tests(features, targets, dates, splits, horizons=REGIME_HORIZONS
                          "name": confidence_column(span), "target": f"HIT_{h}", "horizon": h,
                          "span": span, "expected_sign": +1, "n_days": s["n_days"],
                          "mean": s["ic_mean"], "t_nw": s["ic_t_nw"], "p": s["ic_p"],
-                         "block_share": block_sign_share(ic, splits, +1)})
+                         "block_share": block_sign_share(ic, splits, +1),
+                         **_robust(ic, h, robust)})
             b = quantile_buckets(conf, hit, MIN_NAMES)
             qm = bucket_returns(b, hit).mean(axis=0)
             quint.append({"span": span, "horizon": h,
@@ -762,7 +803,7 @@ def null_excess_series(features: dict[str, pd.DataFrame], targets: dict[str, pd.
 
 def null_excess_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame],
                       null_panels: list[tuple[dict, dict]], dates,
-                      splits: list[Split]) -> pd.DataFrame:
+                      splits: list[Split], robust: bool = False) -> pd.DataFrame:
     """
     The pre-registered H6 family: real minus the seed-averaged shuffled null, per date.
 
@@ -770,7 +811,8 @@ def null_excess_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.D
     is the NULL_SEED panel). Same columns as ``StudyResult.tests``, plus
     ``null_mean`` (time mean of the seed-averaged null statistic over the dates
     that enter ``mean``, so the real statistic on those dates is mean + null_mean)
-    and ``n_seeds``. BH over these 6 rows only; ``verdict`` as H1-H5.
+    and ``n_seeds``. BH over these 6 rows only; ``verdict`` as H1-H5. ``robust``
+    appends ``ROBUST_COLUMNS`` (``robust_summary`` of the same excess series).
     """
     rows = []
     for keys, x, null_mean in null_excess_series(features, targets, null_panels, dates):
@@ -780,19 +822,36 @@ def null_excess_tests(features: dict[str, pd.DataFrame], targets: dict[str, pd.D
                      "block_share": block_sign_share(x, splits, NULL_EXCESS_SIGN),
                      "span": math.nan,
                      "null_mean": float(nm.mean()) if nm.size else math.nan,
-                     "n_seeds": len(null_panels)})
+                     "n_seeds": len(null_panels),
+                     **_robust(x, keys["horizon"], robust)})
     df = pd.DataFrame(rows)
     df["q"] = bh_adjust(df["p"].to_numpy(dtype=np.float64))
     df["verdict"] = [verdict(r) for _, r in df.iterrows()]
     cols = ["section", "group", "name", "target", "horizon", "expected_sign", "n_days", "mean",
             "t_nw", "p", "block_share", "span", "q", "verdict", "null_mean", "n_seeds"]
-    return df[cols]
+    return df[cols + (list(ROBUST_COLUMNS) if robust else [])]
+
+
+def add_robust_verdicts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    ``df`` (one BH family, with ``ROBUST_COLUMNS``) plus ``ROBUST_VERDICT_COLUMNS``:
+    ``q_auto`` / ``q_boot`` = BH of ``p_auto`` / ``p_boot`` over the rows of ``df``, and
+    ``verdict_auto`` / ``verdict_boot`` = ``verdict`` with ``q`` replaced by them.
+    """
+    out = df.copy()
+    out["q_auto"] = bh_adjust(out["p_auto"].to_numpy(dtype=np.float64))
+    out["q_boot"] = bh_adjust(out["p_boot"].to_numpy(dtype=np.float64))
+    for rule in ("auto", "boot"):
+        out[f"verdict_{rule}"] = [verdict({**r.to_dict(), "q": r[f"q_{rule}"]})
+                                  for _, r in out.iterrows()]
+    return out
 
 
 def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame],
               null_features: dict[str, pd.DataFrame], null_targets: dict[str, pd.DataFrame],
               splits: list[Split] | None = None,
-              extra_null_panels: list[tuple[dict, dict]] | None = None) -> StudyResult:
+              extra_null_panels: list[tuple[dict, dict]] | None = None,
+              robust: bool = True, timings: dict[str, float] | None = None) -> StudyResult:
     """
     Every statistic of the study on the OOS dates of ``splits`` (harness splits if None).
 
@@ -800,14 +859,23 @@ def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame
     ``NULL_EXCESS_FEATURES`` / ``NULL_EXCESS_TARGETS`` columns needed) adds the H6
     family in ``h6``, with ``null_features``/``null_targets`` as the first seed.
     Without it ``h6`` is empty and everything else is unchanged.
+
+    ``robust`` (task 350, pre-registered) appends ``ROBUST_COLUMNS`` and then
+    ``ROBUST_VERDICT_COLUMNS`` to ``tests`` (BH over H1-H5) and ``h6`` (BH over H6),
+    after every existing column; the existing columns and every other table are
+    the same as with ``robust=False``. The null sanity tables are not touched.
+    ``timings["robust"]`` accumulates the seconds spent on the robust columns.
     """
     if splits is None:
         splits = study_splits(features["REGIME"])
     oos = oos_dates(splits)
-    cond, means = conditional_tests(features, targets, oos, splits)
-    rank = rank_tests(features, targets, oos, splits)
-    calib, quint, churn = calibration_tests(features, targets, oos, splits)
+    clock0 = _ROBUST_CLOCK[0]
+    cond, means = conditional_tests(features, targets, oos, splits, robust=robust)
+    rank = rank_tests(features, targets, oos, splits, robust=robust)
+    calib, quint, churn = calibration_tests(features, targets, oos, splits, robust=robust)
     tests = pd.concat([cond, rank, calib], ignore_index=True)
+    rob = tests[list(ROBUST_COLUMNS)] if robust else None
+    tests = tests.drop(columns=list(ROBUST_COLUMNS), errors="ignore")
     tests["q"] = bh_adjust(tests["p"].to_numpy(dtype=np.float64))
     tests["verdict"] = [verdict(r) for _, r in tests.iterrows()]
     null_cond, _ = conditional_tests(null_features, null_targets, oos, splits)
@@ -815,7 +883,16 @@ def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame
     h6 = pd.DataFrame()
     if extra_null_panels is not None:
         h6 = null_excess_tests(features, targets,
-                               [(null_features, null_targets), *extra_null_panels], oos, splits)
+                               [(null_features, null_targets), *extra_null_panels], oos, splits,
+                               robust=robust)
+    if robust:
+        t_v = time.monotonic()
+        tests = add_robust_verdicts(pd.concat([tests, rob], axis=1))
+        if len(h6):
+            h6 = add_robust_verdicts(h6)
+        _ROBUST_CLOCK[0] += time.monotonic() - t_v
+    if timings is not None:
+        timings["robust"] = timings.get("robust", 0.0) + _ROBUST_CLOCK[0] - clock0
     return StudyResult(
         splits=splits, oos=oos,
         base_rates_real=label_base_rates(features["REGIME"], oos),
@@ -825,3 +902,60 @@ def run_study(features: dict[str, pd.DataFrame], targets: dict[str, pd.DataFrame
         tests=tests, group_means=means, null_conditional=null_cond, null_rank=null_rank,
         hit_quintiles=quint, churn=churn, h6=h6,
     )
+
+
+# ──────────────────────────────────────────────────────────
+# Size check of the inference rules (task 350, pre-registered; synthetic only)
+# ──────────────────────────────────────────────────────────
+
+SIZE_CHECK_DGPS: dict[int, str] = {1: f"AR(1) rho {SIZE_CHECK_AR_RHO:g}",
+                                   2: f"{SIZE_CHECK_WINDOW}-window rolling mean + iid noise"}
+
+
+def size_check_series(dgp: int, run: int, n: int = SIZE_CHECK_N,
+                      seed: int = SIZE_CHECK_SEED) -> np.ndarray:
+    """Run ``run`` of DGP ``dgp`` (1 = AR(1), 2 = window overlap), true mean 0 (module docstring)."""
+    rng = np.random.default_rng((seed, dgp, run))
+    if dgp == 1:
+        rho = SIZE_CHECK_AR_RHO
+        z = rng.standard_normal(n)
+        x = np.empty(n)
+        x[0] = z[0] / math.sqrt(1.0 - rho * rho)
+        for i in range(1, n):
+            x[i] = rho * x[i - 1] + z[i]
+        return x
+    if dgp == 2:
+        w = SIZE_CHECK_WINDOW
+        e = rng.standard_normal(n + w - 1)
+        u = rng.standard_normal(n)
+        c = np.r_[0.0, np.cumsum(e)]
+        return math.sqrt(w) * (c[w:] - c[:-w]) / w + u
+    raise ValueError(f"unknown size-check DGP {dgp}")
+
+
+def size_check(runs: int = SIZE_CHECK_RUNS, n: int = SIZE_CHECK_N,
+               horizon: int = SIZE_CHECK_HORIZON, level: float = SIZE_CHECK_LEVEL,
+               seed: int = SIZE_CHECK_SEED, dgps=tuple(SIZE_CHECK_DGPS)) -> pd.DataFrame:
+    """
+    Rejection rate at two-sided ``level`` under a true mean of 0, per DGP, for the fixed
+    lag H (``newey_west_tstat(x, H)``, as ``_summary``), ``p_auto`` and ``p_boot``
+    (``robust_summary``); plus the median ``lag_auto`` and ``acf1`` over the runs.
+    """
+    rows = []
+    for d in dgps:
+        fixed = auto = boot = 0
+        lags, acfs = [], []
+        for k in range(runs):
+            x = size_check_series(d, k, n, seed)
+            fixed += normal_pvalue(newey_west_tstat(x, horizon)) < level
+            r = robust_summary(pd.Series(x), horizon)
+            auto += r["p_auto"] < level
+            boot += r["p_boot"] < level
+            lags.append(r["lag_auto"])
+            acfs.append(r["acf1"])
+        rows.append({"dgp": d, "name": SIZE_CHECK_DGPS[d], "runs": runs, "n": n,
+                     "horizon": horizon, "reject_fixed": fixed / runs,
+                     "reject_auto": auto / runs, "reject_boot": boot / runs,
+                     "median_lag_auto": float(np.median(lags)),
+                     "median_acf1": float(np.median(acfs))})
+    return pd.DataFrame(rows)

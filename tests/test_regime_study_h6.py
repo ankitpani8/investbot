@@ -291,9 +291,9 @@ def small_study():
 def test_run_study_without_extra_nulls_is_unchanged(small_study):
     panels, extra = small_study
     old = _old_run_study(*panels)
-    plain = rs.run_study(*panels)
+    plain = rs.run_study(*panels, robust=False)          # task 350's columns are tested there
     assert len(plain.oos) > 200 and plain.tests["n_days"].gt(0).sum() >= 20
-    with_h6 = rs.run_study(*panels, extra_null_panels=extra)
+    with_h6 = rs.run_study(*panels, extra_null_panels=extra, robust=False)
     assert plain.h6.empty
     for res in (plain, with_h6):
         for k, v in old.items():
@@ -449,7 +449,8 @@ def pit_h6_reports(tmp_path_factory, monkeypatch_module):
         for h6 in (False, True):
             report, res = runner.run(universe="index", session=s, report_dir=root, csv_dir=root,
                                      report_date=date(2026, 10, 19),
-                                     complete_from=PIT_COMPLETE_FROM, h6=h6)
+                                     complete_from=PIT_COMPLETE_FROM, h6=h6,
+                                     robust=False)       # task 350's section: own tests
             out[h6] = (report.read_text(), res, report)
     finally:
         s.close()
