@@ -2,6 +2,7 @@
 Regime study runner: does the real-time regime label predict the ex-post regime?
 
     python -m scripts.regime_study [--end YYYY-MM-DD] [--universe index|active] [--no-h6]
+                                   [--no-robust]
 
 Loads the stocks one at a time (``loader.load_daily_history``), computes the
 regime conditioning and the ex-post targets on the real bars and on the
@@ -33,6 +34,12 @@ pass, only the H6 columns kept, features masked like the other null features;
 the report gains the section "H6: real minus shuffled null (pre-registered)" and
 ``tmp_output/regime_study_h6_<YYYYMMDD>.csv``. Every other table is unchanged.
 
+Robust inference (task 350, on unless ``--no-robust``): ``run_study(robust=True)``
+appends ``rs.ROBUST_COLUMNS`` and ``rs.ROBUST_VERDICT_COLUMNS`` to the tests and H6
+tables (and, last, to their CSVs); the report gains the section "Robust inference
+(pre-registered)" after H6, with the pre-registered size check (``rs.size_check``,
+run once per report). Every other table and column is unchanged.
+
 An existing report is never overwritten (``_b``, ``_c``, ... suffixes).
 No DB writes, no network.
 """
@@ -46,6 +53,7 @@ import subprocess
 import sys
 import time
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -540,6 +548,187 @@ def _h6_section(res: rs.StudyResult, compare: rs.StudyResult | None) -> list[str
     return out
 
 
+#: The H4 tests that are "supported" under the fixed lag H in the earlier reports
+#: (2026-10-18 to 2026-10-20, both universes); the robust section always lists them.
+H4_SUPPORTED_TODAY: tuple[tuple[str, str], ...] = (
+    ("REGIME_SCORE_CHAOS", "FWD_VOLX_20"), ("REGIME_SCORE_CHAOS", "FWD_VOLX_60"),
+    ("VOL_RATIO", "FWD_VOLX_20"), ("VOL_RATIO", "FWD_VOLX_60"),
+)
+_VERDICTS = ("supported", "not supported", "wrong sign")
+_RULES = (("fixed lag H", "verdict"), ("auto", "verdict_auto"), ("boot", "verdict_boot"))
+#: A size-check rejection rate above this (twice the 5% level) is called over-rejection.
+SIZE_OVER_REJECT: float = 2 * rs.SIZE_CHECK_LEVEL
+
+_ROBUST_TEST_COLS = [
+    ("section", "section", str), ("test", "test", str), ("days", "n_days", _i), ("mean", "mean", lambda x: _f(x, "{:+.4f}")),
+    ("t (lag H)", "t_nw", _t), ("q", "q", _q), ("lag auto", "lag_auto", _i),
+    ("t auto", "t_auto", _t), ("q auto", "q_auto", _q), ("boot block", "boot_block", _i),
+    ("p boot", "p_boot", lambda x: _f(x, "{:.4f}")), ("q boot", "q_boot", _q),
+    ("verdict (lag H)", "verdict", str), ("verdict auto", "verdict_auto", str),
+    ("verdict boot", "verdict_boot", str),
+]
+
+ROBUST_OPTIONS_PARAGRAPH = (
+    "**What the robust re-test would mean for the pending regime decision** (DECISIONS_PENDING "
+    "\"Regime study: results\", options (a)–(d)); this report does not choose. The four H4 "
+    "volatility tests (REGIME_SCORE_CHAOS / VOL_RATIO vs FWD_VOLX) are the only *supported* "
+    "results of H1–H5, and H6 already showed that their excess over the shuffled null is not "
+    "significant. If they stay *supported* under the automatic lag and the bootstrap, the raw "
+    "association is not an inference artefact, but it is still mostly the shared-denominator "
+    "mechanics H6 measures, so it does not by itself argue for keeping the chaos side as is (a) "
+    "or for a re-fit (b). If they become *not supported*, no pre-registered test of the regime "
+    "layer survives autocorrelation-robust inference: that removes the last evidence that the "
+    "regime inputs carry a signal on daily NIFTY50, which strengthens (d) (a fixed Black-"
+    "Litterman ↔ risk-parity blend until a regime signal passes) and weakens (b) (fitting "
+    "thresholds to inputs with no demonstrated signal). A robust rule can turn a test "
+    "*supported* only where it is less conservative than the lag-H t; the size check above says "
+    "how far either rule can be trusted on series as persistent as these, and a rule that still "
+    "over-rejects there makes a robust *supported* weak evidence while a robust *not supported* "
+    "stands. (c) (`CONFIDENCE_EMA_SPAN`) rests on the calibration and churn tables: H5 is not "
+    "supported under any rule unless the change table above lists an H5 test.")
+
+
+def _family_frames(r: rs.StudyResult) -> list[tuple[str, pd.DataFrame]]:
+    out = [("H1–H5", r.tests)]
+    if len(r.h6):
+        out.append(("H6", r.h6))
+    return out
+
+
+def _robust_counts(r: rs.StudyResult) -> pd.DataFrame:
+    rows = []
+    for fam, df in _family_frames(r):
+        for rule, col in _RULES:
+            c = df[col].value_counts()
+            rows.append({"family": fam, "tests": len(df), "rule": rule,
+                         **{k: int(c.get(k, 0)) for k in _VERDICTS}})
+    return pd.DataFrame(rows)
+
+
+def _robust_groups(r: rs.StudyResult) -> pd.DataFrame:
+    """Per group (H1 ... H6): test count, horizons and medians of the robust inputs."""
+    both = pd.concat([df for _, df in _family_frames(r)], ignore_index=True)
+    rows = []
+    for g, df in both.groupby("group", sort=True):
+        rows.append({"group": g, "tests": len(df),
+                     "H": ", ".join(map(str, sorted(set(df["horizon"])))),
+                     "median_days": float(df["n_days"].median()),
+                     "median_acf1": float(df["acf1"].median()),
+                     "median_lag_auto": float(df["lag_auto"].median()),
+                     "median_boot_block": float(df["boot_block"].median())})
+    return pd.DataFrame(rows)
+
+
+_GROUP_ROWS = (("tests", "tests", _i), ("horizons H", "H", str),
+               ("median days", "median_days", lambda x: _f(x, "{:.0f}")),
+               ("median acf1", "median_acf1", lambda x: _f(x, "{:.2f}")),
+               ("median lag auto", "median_lag_auto", lambda x: _f(x, "{:.0f}")),
+               ("median boot block", "median_boot_block", lambda x: _f(x, "{:.0f}")))
+
+
+def _groups_table(g: pd.DataFrame) -> str:
+    """``_robust_groups`` transposed: one column per group, one row per statistic."""
+    lines = ["| statistic | " + " | ".join(g["group"]) + " |", "|" + "---|" * (len(g) + 1)]
+    for label, col, fn in _GROUP_ROWS:
+        lines.append(f"| {label} | " + " | ".join(fn(v) for v in g[col]) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def robust_changes(r: rs.StudyResult) -> pd.DataFrame:
+    """Every test (both families) whose verdict under auto or boot differs from the lag-H one."""
+    both = pd.concat([df for _, df in _family_frames(r)], ignore_index=True)
+    changed = (both["verdict_auto"] != both["verdict"]) | (both["verdict_boot"] != both["verdict"])
+    return both[changed].reset_index(drop=True)
+
+
+def _with_test_label(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["test"] = [f"{_test_label(x)} (H {x['horizon']})" for _, x in df.iterrows()]
+    return df
+
+
+def _size_check_lines(size: pd.DataFrame | None) -> list[str]:
+    if size is None or not len(size):
+        return []
+    r0 = size.iloc[0]
+    out = [f"**Size check** (pre-registered, run once, not tuned against): {int(r0['runs'])} "
+           f"seeded synthetic per-date series per DGP, n = {int(r0['n'])}, true mean 0, H = "
+           f"{int(r0['horizon'])}; share of runs rejecting at the two-sided "
+           f"{rs.SIZE_CHECK_LEVEL:.0%} level (nominal {rs.SIZE_CHECK_LEVEL:.0%}).\n",
+           _table(size, [("DGP", "name", str), ("reject, lag H", "reject_fixed", _pct),
+                         ("reject, auto", "reject_auto", _pct),
+                         ("reject, boot", "reject_boot", _pct),
+                         ("median lag auto", "median_lag_auto", lambda x: _f(x, "{:.0f}")),
+                         ("median acf1", "median_acf1", lambda x: _f(x, "{:.2f}"))])]
+    bad = [(x["name"], rule, x[f"reject_{k}"]) for _, x in size.iterrows()
+           for rule, k in (("auto", "auto"), ("boot", "boot"))
+           if x[f"reject_{k}"] > SIZE_OVER_REJECT]
+    if bad:
+        out.append("**The robust rules still over-reject** (rate above "
+                   f"{SIZE_OVER_REJECT:.0%}, twice the nominal level): "
+                   + "; ".join(f"{rule} on {name}: {_pct(v)}" for name, rule, v in bad)
+                   + ". On series this persistent a robust *supported* is not conclusive; no "
+                   "further method is added in this task (see DECISIONS_PENDING).\n")
+    else:
+        out.append(f"Neither robust rule rejects more than {SIZE_OVER_REJECT:.0%} of the time "
+                   "on either DGP.\n")
+    return out
+
+
+def _robust_section(res: rs.StudyResult, compare: rs.StudyResult | None,
+                    size: pd.DataFrame | None) -> list[str]:
+    out = ["## Robust inference (pre-registered)\n",
+           "Pre-registered in the module docstring (task 350) before any robust run on the DB. "
+           "Every test above is re-tested on the **same per-date series and dates** with the two "
+           "robust checks of task 340: *auto* = Newey-West t at lag max(H, Andrews AR(1) "
+           f"plug-in lag), capped at floor({rs.ROBUST_MAX_LAG_FRAC:g} n) but never below H, rho "
+           f"clipped at ±{rs.ROBUST_RHO_CLIP:g}; *boot* = stationary block bootstrap p of the "
+           f"centred series, {rs.ROBUST_BOOT_N} draws, seed {rs.ROBUST_BOOT_SEED}, mean block "
+           "max(H, lag auto + 1, round(n^(1/3))). q-values are Benjamini–Hochberg within the "
+           "existing families (H1–H5: one family; H6: its own), and the verdict rule is "
+           "unchanged except that q is replaced (same sign and block-share conditions). The "
+           "lag-H verdicts above stay the pre-registered result; this section only reports "
+           "where a robust rule disagrees.\n"]
+    frames = [("index" if compare is not None else None, res)]
+    if compare is not None:
+        frames.append(("active", compare))
+    for label, r in frames:
+        if "verdict_auto" not in r.tests.columns:
+            continue
+        if label:
+            out.append(f"### {label} universe\n")
+        out.append("Verdict counts per family and rule:\n")
+        out.append(_table(_robust_counts(r), [
+            ("rule", "rule", str), ("family", "family", str), ("tests", "tests", _i),
+            *[(k, k, _i) for k in _VERDICTS]]))
+        out.append("Persistence of the per-date series per group (medians over the group's "
+                   "tests):\n")
+        out.append(_groups_table(_robust_groups(r)))
+        ch = robust_changes(r)
+        if ch.empty:
+            out.append("**No verdict changes under auto or boot.**\n")
+        else:
+            out.append(f"**Tests whose verdict changes under auto or boot ({len(ch)}):**\n")
+            out.append(_table(_with_test_label(ch), _ROBUST_TEST_COLS))
+        keys = set(H4_SUPPORTED_TODAY)
+        listed = np.array([(n, t) in keys for n, t in zip(r.tests["name"], r.tests["target"])],
+                          dtype=bool)
+        h4 = r.tests[(r.tests["group"] == "H4").to_numpy() & listed]
+        out.append("The four H4 tests that are *supported* under the lag-H rule in the earlier "
+                   "reports, always listed:\n")
+        out.append(_table(_with_test_label(h4), _ROBUST_TEST_COLS))
+    fams = [len(df) for _, df in _family_frames(res)]
+    out.append(f"Bootstrap resolution: with {rs.ROBUST_BOOT_N} draws p boot ≥ 1/"
+               f"{rs.ROBUST_BOOT_N + 1} ≈ {1 / (rs.ROBUST_BOOT_N + 1):.4f}, so the smallest "
+               "attainable q boot of a family's top test is "
+               + " and ".join(f"{m}/{rs.ROBUST_BOOT_N + 1} ≈ {m / (rs.ROBUST_BOOT_N + 1):.3f} "
+                              f"({fam})" for fam, m in zip(("H1–H5", "H6"), fams))
+               + "; a test at that floor had no bootstrap draw as extreme as its mean.\n")
+    out.extend(_size_check_lines(size))
+    out.append(ROBUST_OPTIONS_PARAGRAPH + "\n")
+    return out
+
+
 def _repro_line(info: dict, git_hash: str, elapsed_s: float, rss_mb: float) -> str:
     db = info.get("db") or {}
     db_txt = (f"DB: max price date {db.get('db_max_date')}, {db.get('db_price_rows')} "
@@ -553,13 +742,17 @@ def _repro_line(info: dict, git_hash: str, elapsed_s: float, rss_mb: float) -> s
                   "alone" if info["active_s"] > own else "") + ")")
     if "h6_s" in info:
         rt += f"; H6's {len(rs.NULL_EXCESS_SEEDS) - 1} extra null seeds {info['h6_s']:.0f} s"
+    if "robust_s" in info:
+        rt += (f"; robust inference {info['robust_s']:.0f} s (size check "
+               f"{info.get('size_check_s', 0.0):.0f} s of it)")
     return f"- SCORER_VERSION {SCORER_VERSION}; git `{git_hash}`; {db_txt}; {rt}; " \
            f"peak RSS {rss_mb:.0f} MB."
 
 
 def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
                   elapsed_s: float, rss_mb: float, git_hash: str, end: date | None,
-                  compare: rs.StudyResult | None = None) -> str:
+                  compare: rs.StudyResult | None = None,
+                  size_check: pd.DataFrame | None = None) -> str:
     """``info["universe"]`` "index" adds the coverage note and, with ``compare`` (the
     active universe on the same splits), the "Universe effect" table; "active" (or
     missing) gives the pre-260 layout with the survivorship caveat."""
@@ -717,6 +910,10 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
         for line in _h6_section(res, compare if index_mode else None):
             w(line)
 
+    if "verdict_auto" in res.tests.columns:
+        for line in _robust_section(res, compare if index_mode else None, size_check):
+            w(line)
+
     w("## Options for Ankit\n")
     w("This report does not recommend new constants. The choices it informs:\n")
     w("1. **Keep the thresholds and span as they are** (`regime.py` unchanged; current state).")
@@ -755,14 +952,39 @@ def render_report(res: rs.StudyResult, info: dict, report_date: date, *,
     return "\n".join(out) + "\n"
 
 
+@lru_cache(maxsize=1)
+def _size_check_table() -> pd.DataFrame:
+    return rs.size_check()
+
+
+def cached_size_check() -> pd.DataFrame:
+    """``rs.size_check()`` with the pre-registered settings, computed once per process
+    (it is seeded synthetic data, independent of the DB and the universe)."""
+    return _size_check_table().copy()
+
+
+_ROBUST_ALL: tuple[str, ...] = (*rs.ROBUST_COLUMNS, *rs.ROBUST_VERDICT_COLUMNS)
+
+
+def robust_last(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` with the robust columns (if any) moved after every other column, including
+    ``universe``, so the CSVs keep their pre-350 columns first and in order."""
+    rob = [c for c in _ROBUST_ALL if c in df.columns]
+    return df[[c for c in df.columns if c not in rob] + rob]
+
+
 def run(end: date | None = None, *, universe: str = "index", index_code: str = INDEX_CODE,
         session=None, report_dir: Path = REPORT_DIR, csv_dir: Path = CSV_DIR,
         report_date: date | None = None,
-        complete_from: date = COMPLETE_FROM, h6: bool = True) -> tuple[Path, rs.StudyResult]:
+        complete_from: date = COMPLETE_FROM, h6: bool = True,
+        robust: bool = True) -> tuple[Path, rs.StudyResult]:
     """Build the panels, run the study, write the report and CSVs. With
     ``universe="index"`` the active universe is also studied on the same splits.
     ``h6`` adds the pre-registered H6 family (``NULL_EXCESS_SEEDS[1:]`` as extra
-    shuffled nulls, section "H6" and ``regime_study_h6_<date>.csv``)."""
+    shuffled nulls, section "H6" and ``regime_study_h6_<date>.csv``). ``robust`` adds the
+    pre-registered robust columns, the size check and the section
+    "Robust inference (pre-registered)".
+    """
     from investbot.evaluation.loader import db_fingerprint
 
     t0 = time.monotonic()
@@ -782,8 +1004,10 @@ def run(end: date | None = None, *, universe: str = "index", index_code: str = I
     if not feats:
         raise RuntimeError("no assets with enough daily bars for the regime study")
     t_study = time.monotonic()
+    timings: dict[str, float] = {}
     res = rs.run_study(feats, tg, nfeats, ntg,
-                       extra_null_panels=info.pop("null_excess_panels", None))
+                       extra_null_panels=info.pop("null_excess_panels", None),
+                       robust=robust, timings=timings)
     logger.info("regime study: statistics %.1f s", time.monotonic() - t_study)
     if h6:
         logger.info("regime study: H6 extra null seeds %s: %.1f s of panel building",
@@ -796,11 +1020,20 @@ def run(end: date | None = None, *, universe: str = "index", index_code: str = I
         afeats, atg, anfeats, antg = info.pop("active_panels")
         if afeats:
             compare = rs.run_study(afeats, atg, anfeats, antg, splits=res.splits,
-                                   extra_null_panels=info.pop("active_null_excess_panels", None))
+                                   extra_null_panels=info.pop("active_null_excess_panels", None),
+                                   robust=robust, timings=timings)
         info.pop("active_null_excess_panels", None)
         del afeats, atg, anfeats, antg
         # the active frames come out of the same per-asset pass, so this is the extra cost
         info["active_s"] = time.monotonic() - t_cmp
+    size = None
+    if robust:
+        t_size = time.monotonic()
+        size = cached_size_check()
+        info["size_check_s"] = time.monotonic() - t_size
+        info["robust_s"] = timings.get("robust", 0.0) + info["size_check_s"]
+        logger.info("regime study: robust inference %.1f s (size check %.1f s)",
+                    info["robust_s"], info["size_check_s"])
     report_date = report_date or date.today()
     report_dir.mkdir(parents=True, exist_ok=True)
     csv_dir.mkdir(parents=True, exist_ok=True)
@@ -808,18 +1041,18 @@ def run(end: date | None = None, *, universe: str = "index", index_code: str = I
     tests_out = res.tests if compare is None else pd.concat(
         [res.tests.assign(universe="index"), compare.tests.assign(universe="active")],
         ignore_index=True)
-    tests_out.to_csv(tests_csv, index=False)
+    robust_last(tests_out).to_csv(tests_csv, index=False)
     if len(res.h6):
         h6_out = res.h6 if compare is None or not len(compare.h6) else pd.concat(
             [res.h6.assign(universe="index"), compare.h6.assign(universe="active")],
             ignore_index=True)
-        h6_out.to_csv(tests_csv.with_name(tests_csv.name.replace("_tests_", "_h6_")),
-                      index=False)
+        robust_last(h6_out).to_csv(tests_csv.with_name(tests_csv.name.replace("_tests_", "_h6_")),
+                                   index=False)
     pd.concat([res.base_rates_real.assign(panel="real"),
                res.base_rates_null.assign(panel="null")]).to_csv(rates_csv, index=False)
     text = render_report(res, info, report_date, elapsed_s=time.monotonic() - t0,
                          rss_mb=peak_rss_mb(), git_hash=git_short_hash(), end=end,
-                         compare=compare)
+                         compare=compare, size_check=size)
     report.write_text(text, encoding="utf-8")
     return report, res
 
@@ -833,6 +1066,8 @@ def main(argv=None) -> None:
                          "rows); active: today's active stocks, unmasked")
     ap.add_argument("--no-h6", action="store_true",
                     help="skip the pre-registered H6 family (the extra shuffled-null seeds)")
+    ap.add_argument("--no-robust", action="store_true",
+                    help="skip the pre-registered robust inference (auto lag, block bootstrap)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
     logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
@@ -853,13 +1088,17 @@ def main(argv=None) -> None:
         elif universe == "index" and not has_members:
             print(f"index_membership has no {INDEX_CODE} rows; run `python main.py setup` first")
             sys.exit(1)
-        report, res = run(args.end, universe=universe, session=session, h6=not args.no_h6)
+        report, res = run(args.end, universe=universe, session=session, h6=not args.no_h6,
+                          robust=not args.no_robust)
     finally:
         session.close()
     counts = res.tests["verdict"].value_counts().to_dict()
     print(f"\n  Report: {report}\n  Universe: {universe}\n  Verdicts: {counts}")
     if len(res.h6):
         print(f"  H6 verdicts: {res.h6['verdict'].value_counts().to_dict()}")
+    if "verdict_auto" in res.tests.columns:
+        for rule in ("auto", "boot"):
+            print(f"  Verdicts ({rule}): {res.tests[f'verdict_{rule}'].value_counts().to_dict()}")
 
 
 if __name__ == "__main__":
