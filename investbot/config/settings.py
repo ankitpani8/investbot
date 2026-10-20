@@ -28,7 +28,9 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # ── Data Ingestion ────────────────────────────────────────
 INTRADAY_INTERVAL = "15m"
 INTRADAY_PERIOD = "60d"
-DAILY_PERIOD = "5y"
+# "max" (Yahoo has NSE daily history back to the 1990s-2000s for most names): the evaluation
+# harness needs decades, not 5 years, to tell a real signal from noise (decided 2026-10-20).
+DAILY_PERIOD = "max"
 
 # Yahoo revises recent bars, and a bar fetched mid-session is partial. Every run
 # re-fetches and upserts this trailing window; older history stays insert-only.

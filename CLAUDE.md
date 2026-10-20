@@ -69,19 +69,27 @@ the allocation layer (Black-Litterman ↔ risk parity blended by regime_confiden
 tax layer, backtesting, Streamlit dashboard.
 Open tasks are tracked in `docs/BACKLOG.md`. If it doesn't exist yet, create it from this list.
 
-## Current priorities (set by Ankit, 2026-10-18; the planner must follow these)
+## Current priorities (updated 2026-10-20; the planner must follow these)
 
-1. **Evaluation before tuning.** Build and use the walk-forward forward-return harness
-   (`investbot/evaluation/`, task 100-eval-harness). Until it exists and has produced a first report,
-   don't schedule new scoring layers, weight changes or allocation work.
-2. Small decided follow-ups in `tools/agents/inbox/` (110–140).
-3. **Fundamentals are paused** (080/090 parked) until (a) the harness exists and (b) fundamentals are
-   **point-in-time**: a filing's numbers count only from its publication date, or conservatively from
-   period end + 45 days (quarterly) / + 60 days (annual), per SEBI LODR Reg. 33. yfinance statements carry
-   period-end dates, not filing dates, so using them as of period end is lookahead. Balance-sheet and
+The harness works, and on the data we have, nothing beats a trivial baseline after costs (eval_2026101x/20,
+regime_study_*). The bottleneck is now **data, not methodology**: 5 years of history, 20 past index members
+with no prices, and an empty `corporate_actions` table (so total-return labels equal price-only labels).
+Only a human ingest can fix that, since agents must not bulk-download.
+
+1. **Human step (Ankit):** `python main.py ingest --full && python main.py ingest --members --full && python main.py dq`
+   (DAILY_PERIOD is now "max"). Until it has run, don't schedule tasks that need more history.
+2. **Task 400:** re-run the harness and the regime study on the full history; write what changed vs the 5-year runs.
+3. **No more inference-method work on the current dataset.** Robust IC, bootstrap and BH are done.
+   More statistics on the same 5 years won't change the answer.
+4. **Allocation work is frozen** (Black-Litterman, PID, 370/380 parked). With no signal that survives costs,
+   there are no views to allocate on. It unfreezes when a signal passes the harness out of sample, net of costs.
+5. **Direction decision pending (Ankit):** move the decision horizon to monthly/weekly and research slow factors
+   (momentum, low-vol, point-in-time quality/value) instead of intraday technical scoring. See docs/DECISIONS_PENDING.md.
+   Don't schedule work that presumes either answer.
+6. **Fundamentals are paused** until they are **point-in-time**: a filing's numbers count only from its publication
+   date, or conservatively from period end + 45 days (quarterly) / + 60 days (annual), per SEBI LODR Reg. 33.
+   yfinance statements carry period-end dates, so using them as of period end is lookahead. Balance-sheet and
    cash-flow rules also wait for Ankit's notes from *How to Read Financial Statements*. Don't invent them.
-4. After the harness: whatever its first report says is most promising, then the batch-scoring path
-   that backtests need, then sentiment/allocation.
 
 ## Non-negotiable engineering rules
 
