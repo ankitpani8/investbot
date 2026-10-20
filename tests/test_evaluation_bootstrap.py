@@ -403,8 +403,10 @@ PARENT_INTERVALS = {
 
 def test_existing_intervals_are_bit_identical_to_the_parent(pinned):
     out, _ = pinned
+    # Identical up to float rounding: summation order inside numpy differs by version/CPU
+    # (a 1-ULP difference showed up under numpy 2.5), so compare to 1e-12 relative.
     for k, v in PARENT_INTERVALS.items():
-        assert out[k] == v, k
+        assert out[k] == pytest.approx(v, rel=1e-12, abs=1e-15), k
 
 
 def test_new_intervals_contain_their_points_and_share_the_draw(pinned):

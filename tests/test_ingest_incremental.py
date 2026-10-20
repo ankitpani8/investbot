@@ -202,7 +202,7 @@ def test_thin_incremental_frame_triggers_exactly_one_full_download(session, asse
     assert server.calls[1]["period"] == settings.DAILY_PERIOD and server.calls[1]["actions"] is True
     assert (res.incremental_downloads, res.full_downloads) == (1, 1)
     assert set(_daily_rows(session)) == {d.date() for d in full.index}
-    assert any("downloading 5y" in r.getMessage() for r in caplog.records if r.levelno == logging.INFO)
+    assert any(f"downloading {settings.DAILY_PERIOD}" in r.getMessage() for r in caplog.records if r.levelno == logging.INFO)
 
 
 def test_empty_incremental_frame_falls_back_to_full(session, asset, monkeypatch):
