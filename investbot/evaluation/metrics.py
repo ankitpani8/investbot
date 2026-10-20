@@ -91,6 +91,9 @@ from investbot.evaluation.stats import (
     ROBUST_BOOT_SEED,
     ROBUST_MAX_LAG_FRAC,
     ROBUST_RHO_CLIP,
+    acf,
+    andrews_bartlett_lag,
+    block_bootstrap_mean_pvalue,
     newey_west_se,
     newey_west_tstat,
     normal_pvalue,
@@ -173,6 +176,46 @@ def ic_summary(ic: pd.Series, horizon: int) -> dict[str, float]:
         "ic_p": normal_pvalue(t),
         "ic_hit": float((a > 0).mean()) if n else math.nan,
     }
+
+
+#: Keys of ``ic_robust``, in this order (appended after the existing metrics columns).
+ROBUST_KEYS: tuple[str, ...] = (*(f"ic_acf{lag}" for lag in ROBUST_ACF_LAGS), "ic_lag_auto",
+                                "ic_t_auto", "ic_p_auto", "ic_boot_block", "ic_p_boot")
+
+
+def ic_robust(ic: pd.Series, horizon: int) -> dict[str, float]:
+    """
+    Autocorrelation-robust inference on the mean of a per-date IC series (pre-registered,
+    task 340). Non-finite dates are left out, as in ``ic_summary``, which is unchanged.
+
+        ic_acf1/5/20   sample autocorrelation of the IC series at ``ROBUST_ACF_LAGS``
+        ic_lag_auto    ``andrews_bartlett_lag(ic, min_lag=h - 1)``: Andrews AR(1) plug-in,
+                       never below the fixed lag h - 1, capped at
+                       floor(``ROBUST_MAX_LAG_FRAC`` n), rho clipped at ``ROBUST_RHO_CLIP``
+        ic_t_auto      Newey-West t of the mean at ``ic_lag_auto``
+        ic_p_auto      two-sided normal p-value of ``ic_t_auto``
+        ic_boot_block  mean block of the bootstrap: max(h, ic_lag_auto + 1, round(n^(1/3)))
+        ic_p_boot      ``block_bootstrap_mean_pvalue`` (``ROBUST_BOOT_N`` draws, seed
+                       ``ROBUST_BOOT_SEED``, centred series), NaN below
+                       ``BOOTSTRAP_MIN_PERIODS`` dates
+
+    A robustness check next to ``ic_p``, not a new verdict rule.
+    """
+    a = ic.to_numpy(dtype=np.float64)
+    a = a[np.isfinite(a)]
+    n = a.size
+    out: dict[str, float] = {f"ic_acf{lag}": v for lag, v in acf(a, ROBUST_ACF_LAGS).items()}
+    lag = andrews_bartlett_lag(a, min_lag=max(horizon - 1, 0), max_lag_frac=ROBUST_MAX_LAG_FRAC)
+    t = newey_west_tstat(a, lag)
+    block = max(horizon, lag + 1, round(n ** (1.0 / 3.0)))
+    out.update({
+        "ic_lag_auto": lag,
+        "ic_t_auto": t,
+        "ic_p_auto": normal_pvalue(t),
+        "ic_boot_block": block,
+        "ic_p_boot": block_bootstrap_mean_pvalue(a, block, ROBUST_BOOT_N, ROBUST_BOOT_SEED),
+    })
+    return {k: out[k] for k in ROBUST_KEYS}
 
 
 def quantile_buckets(S: pd.DataFrame, Y: pd.DataFrame, min_names: int = MIN_NAMES,

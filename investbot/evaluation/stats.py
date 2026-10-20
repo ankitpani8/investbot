@@ -6,6 +6,9 @@ Small statistics helpers for the evaluation harness (numpy only, no scipy).
     normal_pvalue      two-sided p-value of a t-stat under the normal approximation
     bh_adjust          Benjamini–Hochberg adjusted q-values
     spearman           rank correlation of two 1-D arrays (NaN pairs ignored)
+    acf                sample autocorrelation at given lags
+    andrews_bartlett_lag          automatic Newey-West lag (Andrews 1991, AR(1) plug-in)
+    block_bootstrap_mean_pvalue   stationary block bootstrap p-value of H0 mean = 0
 
 Newey-West
     For x_1..x_n with mean m and autocovariances
@@ -20,13 +23,17 @@ Autocorrelation-robust inference (task 340, pre-registered before any run on the
     (a slow signal, a regime in the cross-section) has autocorrelation beyond
     it, and the fixed-lag t then over-rejects (task 330: |t| ~ 4 at a true
     mean of 0). Two robust p-values are computed next to the existing one,
-    with the constants below fixed before any result was seen.
+    with the constants below fixed before any result was seen:
+    ``newey_west_tstat`` at the ``andrews_bartlett_lag`` (never below h - 1),
+    and ``block_bootstrap_mean_pvalue`` of the centred series.
 """
 from __future__ import annotations
 
 import math
 
 import numpy as np
+
+from investbot.evaluation.performance import BOOTSTRAP_MIN_PERIODS, stationary_bootstrap_indices
 
 # ──────────────────────────────────────────────────────────
 # Pre-registered constants of the robust IC inference (task 340). Do not tune.
@@ -133,3 +140,90 @@ def spearman(x, y) -> float:
     ry -= ry.mean()
     den = math.sqrt(float(rx @ rx) * float(ry @ ry))
     return math.nan if den == 0.0 else float(rx @ ry) / den
+
+
+# ──────────────────────────────────────────────────────────
+# Autocorrelation-robust inference (task 340)
+# ──────────────────────────────────────────────────────────
+
+def acf(x, lags) -> dict[int, float]:
+    """
+    Sample autocorrelation of ``x`` (non-finite values removed first) at each lag:
+    ``sum_i (x_i - m)(x_{i+l} - m) / sum_i (x_i - m)^2`` with the full-sample mean m
+    (the statsmodels ``acf`` convention, as ``regime_study._lag1_autocorr``).
+
+    NaN for a lag with ``l >= n - 1`` (fewer than two pairs) or a constant series.
+    """
+    a = _finite(x)
+    n = a.size
+    d = a - a.mean() if n else a
+    den = float(d @ d)
+    out: dict[int, float] = {}
+    for lag in lags:
+        lag = int(lag)
+        if lag < 0:
+            raise ValueError("lags must be >= 0")
+        if lag >= n - 1 or den <= 0.0:
+            out[lag] = math.nan
+        else:
+            out[lag] = float(d[lag:] @ d[:n - lag]) / den
+    return out
+
+
+def andrews_bartlett_lag(x, min_lag: int = 0, max_lag_frac: float = ROBUST_MAX_LAG_FRAC) -> int:
+    """
+    Automatic Newey-West lag: Andrews (1991) AR(1) plug-in bandwidth for the Bartlett kernel.
+
+    With rho = lag-1 ``acf`` of ``x`` clipped to ±``ROBUST_RHO_CLIP`` and n finite values,
+
+        alpha = 4 rho^2 / ((1 - rho)^2 (1 + rho)^2)
+        S     = 1.1447 (alpha n)^(1/3)
+
+    Andrews weighs autocovariance l by ``1 - l / S`` (zero from l >= S on), while
+    ``newey_west_se`` weighs it by ``1 - l / (lag + 1)``. Setting lag + 1 = S and
+    rounding up so that no lag Andrews keeps is cut gives ``lag = ceil(S) - 1``.
+
+    Returns ``max(min_lag, ceil(S) - 1)``, capped at ``floor(max_lag_frac * n)``
+    (the cap wins over ``min_lag``). A series whose rho is undefined (n < 3 or constant)
+    gets ``min_lag`` under the same cap. The harness passes ``min_lag = h - 1`` so the
+    lag never drops below the label overlap. For white noise rho is about ±1/sqrt(n),
+    so at n = 700 ``ceil(S) - 1`` is typically 1, not 0.
+    """
+    a = _finite(x)
+    n = a.size
+    cap = int(math.floor(max_lag_frac * n))
+    rho = acf(a, (1,))[1]
+    if not np.isfinite(rho):
+        return max(0, min(min_lag, cap))
+    rho = min(max(rho, -ROBUST_RHO_CLIP), ROBUST_RHO_CLIP)
+    alpha = 4.0 * rho * rho / ((1.0 - rho) ** 2 * (1.0 + rho) ** 2)
+    s = 1.1447 * (alpha * n) ** (1.0 / 3.0)
+    lag = max(int(min_lag), int(math.ceil(s)) - 1)
+    return max(0, min(lag, cap))
+
+
+def block_bootstrap_mean_pvalue(x, mean_block: float, n_boot: int = ROBUST_BOOT_N,
+                                seed: int = ROBUST_BOOT_SEED) -> float:
+    """
+    Two-sided stationary block bootstrap p-value of H0: mean(x) = 0.
+
+    The **centred** series ``x - mean(x)`` (finite values only, in order) is resampled
+    with ``performance.stationary_bootstrap_indices`` (mean block ``mean_block``,
+    ``default_rng(seed)``), which imposes the null while keeping the dependence within
+    blocks. With mean* the mean of each draw,
+
+        p = (1 + #{|mean*| >= |mean(x)|}) / (1 + n_boot)
+
+    so p is never 0. NaN with fewer than ``performance.BOOTSTRAP_MIN_PERIODS`` finite values.
+    The same seed for every call gives every test the same draws for a given (n, block).
+    """
+    a = _finite(x)
+    n = a.size
+    if n < BOOTSTRAP_MIN_PERIODS:
+        return math.nan
+    mean = float(a.mean())
+    d = a - mean
+    idx = stationary_bootstrap_indices(n, max(float(mean_block), 1.0), n_boot,
+                                       np.random.default_rng(seed))
+    boot = d[idx].mean(axis=1)
+    return (1.0 + float((np.abs(boot) >= abs(mean)).sum())) / (1.0 + n_boot)

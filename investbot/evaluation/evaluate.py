@@ -35,6 +35,18 @@ The "price" OOS rows get the same three columns from their own BH family
 (the price-only labels, same tests), so a verdict can be compared across the
 two returns; the headline family is unchanged.
 
+Robust IC inference (task 340, pre-registered; a check, not a new rule): on the OOS rows of
+each ``BH_LABELS`` label only, ``metrics.ic_robust`` of the same per-date IC series the row's
+``ic_p`` uses adds ``ROBUST_KEYS`` (IC autocorrelations, an automatic Andrews lag with its
+Newey-West t and p, a stationary block bootstrap p), then, within the same BH family as
+``ic_q``:
+    ic_q_auto / ic_q_boot           BH q-values of ``ic_p_auto`` / ``ic_p_boot``
+    promising_auto / promising_boot the promising rule with that q and the same
+                                    ``block_sign_share``
+Every other row (``INVERTED_SUBSET`` included) has NaN there and False for the flags. These
+columns come after every existing column, which stays bit-identical; ``robust=False`` skips
+the step (all NaN / False).
+
 Every row with quintile metrics also has the open-to-open held portfolio
 (``held_*``, from ``FWD_TR_OO_RET_h``, or ``FWD_OO_RET_h`` on the "price" rows
 and when the primary return is "price") next to the open→close ``lo_*`` check.
@@ -59,6 +71,7 @@ negative IC is reported as such (``direction``), not flipped.
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 import pandas as pd
@@ -67,8 +80,10 @@ from investbot.config.scoring_weights import REGIME_NAMES
 from investbot.evaluation.labels import HORIZONS
 from investbot.evaluation.metrics import (
     MIN_NAMES,
+    ROBUST_KEYS,
     ROUND_TRIP_COST,
     daily_ic,
+    ic_robust,
     ic_summary,
     pooled_ic,
     signal_metrics,
@@ -104,6 +119,12 @@ PRIMARY_RETURN: str = "tr"
 COMPARISON_RETURN: str = "price"
 #: ``label`` values that carry their own BH family (headline first).
 BH_LABELS: tuple[str, ...] = ("open", COMPARISON_RETURN)
+#: Columns ``_add_multiple_testing`` appends after ``ROBUST_KEYS``, with their empty value.
+ROBUST_VERDICT_COLUMNS: tuple[tuple[str, object], ...] = (
+    ("ic_q_auto", np.nan), ("ic_q_boot", np.nan),
+    ("promising_auto", False), ("promising_boot", False))
+#: ``timings`` key of the robust IC step (seconds, summed over calls).
+ROBUST_TIMING_KEY: str = "robust_ic"
 
 
 def universe_mask(features: pd.DataFrame) -> pd.Series | None:
@@ -161,10 +182,15 @@ def evaluate(
     min_names: int = MIN_NAMES,
     cost: float = ROUND_TRIP_COST,
     primary: str = PRIMARY_RETURN,
+    robust: bool = True,
+    timings: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, list[Split]]:
     """(metrics table, walk-forward splits). See the module docstring for the rows.
 
-    ``primary="price"`` gives the pre-task-200 table (no "price" comparison rows)."""
+    ``primary="price"`` gives the pre-task-200 table (no "price" comparison rows).
+    ``robust=False`` skips the robust IC step (its columns stay NaN / False).
+    ``timings``: if given, the seconds of the robust step are added under
+    ``ROBUST_TIMING_KEY``."""
     if primary not in RETURN_LABELS:
         raise ValueError(f"primary must be one of {tuple(RETURN_LABELS)}, not {primary!r}")
     compare = primary != COMPARISON_RETURN
@@ -193,6 +219,17 @@ def evaluate(
     years = sorted(set(oos.year))
 
     rows: list[dict] = []
+    #: row position -> ``ic_robust`` of a BH row (OOS, label in BH_LABELS)
+    robust_rows: dict[int, dict[str, float]] = {}
+    robust_s = 0.0
+
+    def add_robust(ic_oos: pd.Series, h: int) -> None:
+        nonlocal robust_s
+        if robust:
+            t0 = time.monotonic()
+            robust_rows[len(rows) - 1] = ic_robust(ic_oos, h)
+            robust_s += time.monotonic() - t0
+
     for sig in signals:
         S = signal_matrix(features, sig, cal, tickers, U)
         if not np.isfinite(S.to_numpy(dtype=np.float64)).any():
@@ -210,13 +247,14 @@ def evaluate(
 
             add("oos", "open", signal_metrics(S.loc[oos], Y.loc[oos], h, min_names, cost,
                                               Yo.loc[oos], boot("open", "oos")))
+            ic = daily_ic(S, Y, min_names)
+            add_robust(ic.loc[oos], h)     # per-date, so equal to the OOS row's own IC series
             add("all", "open", signal_metrics(S, Y, h, min_names, cost, Yo,
                                               boot("open", "all")))
             Yc = ys[("close", h)]
             add("oos", "close", signal_metrics(S.loc[oos], Yc.loc[oos], h, min_names, cost,
                                                Yo.loc[oos], boot("close", "oos")))
 
-            ic = daily_ic(S, Y, min_names)
             for sp in splits:
                 add(f"block:{sp.label}", "open", ic_summary(ic.loc[sp.test], h))
             if compare:
@@ -225,6 +263,7 @@ def evaluate(
                     signal_metrics(S.loc[oos], Yp.loc[oos], h, min_names, cost, Yop.loc[oos],
                                    boot(COMPARISON_RETURN, "oos")))
                 icp = daily_ic(S, Yp, min_names)
+                add_robust(icp.loc[oos], h)
                 for sp in splits:
                     add(f"block:{sp.label}", COMPARISON_RETURN, ic_summary(icp.loc[sp.test], h))
             for code, name in REGIME_NAMES.items():
@@ -242,7 +281,9 @@ def evaluate(
     table = pd.DataFrame(rows)
     if table.empty:
         return table, splits
-    table = _add_multiple_testing(table)
+    if timings is not None:
+        timings[ROBUST_TIMING_KEY] = timings.get(ROBUST_TIMING_KEY, 0.0) + robust_s
+    table = _add_multiple_testing(table, pd.DataFrame.from_dict(robust_rows, orient="index"))
     inverted = promising_inverted(table)
     extra = []
     for sig, h in inverted:
@@ -252,7 +293,8 @@ def evaluate(
                       **signal_metrics(-S.loc[oos], Y.loc[oos], h, min_names, cost, Yo.loc[oos],
                                        True),
                       "ic_q": np.nan, "block_sign_share": np.nan, "promising": False,
-                      "direction": NEGATED_DIRECTION})
+                      "direction": NEGATED_DIRECTION,
+                      **dict.fromkeys(ROBUST_KEYS, np.nan), **dict(ROBUST_VERDICT_COLUMNS)})
     if extra:
         table = pd.concat([table, pd.DataFrame(extra)], ignore_index=True)
     return table, splits
@@ -265,12 +307,28 @@ def promising_inverted(table: pd.DataFrame) -> list[tuple[str, int]]:
     return [(str(s), int(h)) for s, h in zip(sel["signal"], sel["horizon"])]
 
 
-def _add_multiple_testing(table: pd.DataFrame) -> pd.DataFrame:
+def _add_multiple_testing(table: pd.DataFrame,
+                          robust: pd.DataFrame | None = None) -> pd.DataFrame:
     """BH q, block sign share, promising and direction on the OOS rows of each ``BH_LABELS``
-    label, each label its own family (the headline family is the "open" rows)."""
+    label, each label its own family (the headline family is the "open" rows).
+
+    ``robust``: ``ic_robust`` per row position (index = ``table`` index, BH rows only); its
+    ``ROBUST_KEYS`` and the ``ROBUST_VERDICT_COLUMNS`` are appended after ``direction``
+    (NaN / False elsewhere), and ``ic_q_auto`` / ``ic_q_boot`` / ``promising_auto`` /
+    ``promising_boot`` are filled within the same families as ``ic_q``. Without ``robust``,
+    ``ROBUST_KEYS`` columns already in ``table`` are kept (re-running gives the same table)."""
     for col, empty in (("ic_q", np.nan), ("block_sign_share", np.nan), ("promising", False),
                        ("direction", "")):
         table[col] = empty
+    if robust is None:
+        robust = table[[k for k in ROBUST_KEYS if k in table.columns]]
+    table = table.drop(columns=[c for c in (*ROBUST_KEYS, *dict(ROBUST_VERDICT_COLUMNS))
+                                if c in table.columns])
+    extra = {k: (robust[k].reindex(table.index).to_numpy(dtype=np.float64) if k in robust
+                 else np.full(len(table), np.nan)) for k in ROBUST_KEYS}
+    extra.update({col: np.full(len(table), empty, dtype=bool if empty is False else np.float64)
+                  for col, empty in ROBUST_VERDICT_COLUMNS})
+    table = pd.concat([table, pd.DataFrame(extra, index=table.index)], axis=1)
     for label in BH_LABELS:
         head = (table["label"] == label) & (table["subset"] == "oos")
         if not head.any():
@@ -292,6 +350,11 @@ def _add_multiple_testing(table: pd.DataFrame) -> pd.DataFrame:
         table.loc[head, "promising"] = (
             (table.loc[head, "ic_q"] < PROMISING_Q)
             & (table.loc[head, "block_sign_share"] >= PROMISING_SIGN_SHARE))
+        for kind in ("auto", "boot"):
+            table.loc[head, f"ic_q_{kind}"] = bh_adjust(table.loc[head, f"ic_p_{kind}"].to_numpy())
+            table.loc[head, f"promising_{kind}"] = (
+                (table.loc[head, f"ic_q_{kind}"] < PROMISING_Q)
+                & (table.loc[head, "block_sign_share"] >= PROMISING_SIGN_SHARE))
         table.loc[head, "direction"] = np.where(table.loc[head, "ic_mean"] >= 0, "as designed",
                                                 "inverted")
     return table
