@@ -49,6 +49,19 @@ Pooled IC (``pooled_*``)
     For thin subsets (e.g. one regime) where few dates reach ``MIN_NAMES``:
     per-date centred ranks scaled to [-0.5, 0.5], pooled over every
     (date, name) row of dates with >= ``POOLED_MIN_NAMES`` names.
+
+Pre-registered (task 340, robust IC inference)
+    Fixed before any run on the DB and not to be changed after seeing results:
+    the IC autocorrelations reported at lags ``ROBUST_ACF_LAGS`` = (1, 5, 20);
+    an automatic Newey-West lag from the Andrews (1991) AR(1) plug-in for the
+    Bartlett kernel, never below h - 1, with the AR(1) coefficient clipped to
+    ±``ROBUST_RHO_CLIP`` = 0.97 and the lag capped at
+    ``floor(ROBUST_MAX_LAG_FRAC * n)`` = floor(0.25 n); and a stationary block
+    bootstrap p-value of H0 mean IC = 0 with ``ROBUST_BOOT_N`` = 2000 draws,
+    seed ``ROBUST_BOOT_SEED`` = 20261020 and mean block
+    max(h, auto lag + 1, round(n^(1/3))). These are a robustness check of the
+    BH verdicts next to ``ic_p``; the verdict rule (``ic_q``, ``promising``)
+    does not change.
 """
 from __future__ import annotations
 
@@ -73,7 +86,16 @@ from investbot.evaluation.performance import (
     trade_stats,
     var_cvar,
 )
-from investbot.evaluation.stats import newey_west_se, newey_west_tstat, normal_pvalue, spearman
+from investbot.evaluation.stats import (
+    ROBUST_BOOT_N,
+    ROBUST_BOOT_SEED,
+    ROBUST_MAX_LAG_FRAC,
+    ROBUST_RHO_CLIP,
+    newey_west_se,
+    newey_west_tstat,
+    normal_pvalue,
+    spearman,
+)
 
 #: Fewer names than this on a date: the date is skipped.
 MIN_NAMES: int = 10
@@ -103,6 +125,12 @@ TRADING_DAYS: int = 252
 #: Annual risk-free rate for Sharpe and Sortino. A constant placeholder for the
 #: 91-day T-bill (master plan §9.1), not a dated series; see docs/DECISIONS_PENDING.md.
 RISK_FREE_RATE_ANNUAL: float = 0.065
+#: Pre-registered (task 340): lags at which the autocorrelation of the per-date IC
+#: series is reported (``ic_acf1``, ``ic_acf5``, ``ic_acf20``). Descriptive only.
+ROBUST_ACF_LAGS: tuple[int, ...] = (1, 5, 20)
+#: The other pre-registered constants (``ROBUST_BOOT_N``, ``ROBUST_BOOT_SEED``,
+#: ``ROBUST_MAX_LAG_FRAC``, ``ROBUST_RHO_CLIP``) live next to their helpers in ``stats.py``
+#: and are imported here.
 
 
 def joint_mask(S: pd.DataFrame, Y: pd.DataFrame, min_names: int = MIN_NAMES):

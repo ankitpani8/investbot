@@ -14,12 +14,33 @@ Newey-West
     With lag L = 0 this is the plain (biased, 1/n) variance of the mean.
     The harness uses L = h - 1 for an h-bar forward return: consecutive daily
     observations share h - 1 bars of the same return window.
+
+Autocorrelation-robust inference (task 340, pre-registered before any run on the DB)
+    The fixed lag h - 1 only covers the label overlap. A persistent IC series
+    (a slow signal, a regime in the cross-section) has autocorrelation beyond
+    it, and the fixed-lag t then over-rejects (task 330: |t| ~ 4 at a true
+    mean of 0). Two robust p-values are computed next to the existing one,
+    with the constants below fixed before any result was seen.
 """
 from __future__ import annotations
 
 import math
 
 import numpy as np
+
+# ──────────────────────────────────────────────────────────
+# Pre-registered constants of the robust IC inference (task 340). Do not tune.
+# ──────────────────────────────────────────────────────────
+
+#: Draws of the stationary block bootstrap behind the bootstrap p-value of a mean.
+ROBUST_BOOT_N: int = 2000
+#: Seed of that bootstrap, the same for every test (common random numbers across tests).
+ROBUST_BOOT_SEED: int = 20261020
+#: The automatic (Andrews) Newey-West lag is capped at ``floor(ROBUST_MAX_LAG_FRAC * n)``.
+ROBUST_MAX_LAG_FRAC: float = 0.25
+#: The lag-1 autocorrelation that drives the Andrews bandwidth is clipped to
+#: ±``ROBUST_RHO_CLIP``, so a near-unit-root series does not blow the lag up.
+ROBUST_RHO_CLIP: float = 0.97
 
 
 def _finite(x) -> np.ndarray:
