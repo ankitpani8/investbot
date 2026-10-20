@@ -136,13 +136,22 @@ class IndexMembership(Base):
 
 class Financial(Base):
     __tablename__ = "financials"
-    __table_args__ = (UniqueConstraint("asset_id", "fiscal_year", "period_type"),)
+    # One row per reporting period. Keyed on period_end, not fiscal_year: fiscal_year is
+    # period_end.year, so keying on it collapsed quarterly rows to one per calendar year.
+    __table_args__ = (UniqueConstraint("asset_id", "period_end", "period_type"),)
 
     id = Column(Integer, primary_key=True)
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
-    fiscal_year = Column(Integer, nullable=False)
+    fiscal_year = Column(Integer, nullable=False)               # period_end.year (not the Indian FY label)
     period_type = Column(String, default="annual")              # 'annual' or 'quarterly'
+    # Real publication date of the results; NULL when unknown (yfinance gives none).
+    # Before migration financials_pit this column held the period end, which is lookahead.
     filing_date = Column(Date)
+    period_end = Column(Date)                                   # last day of the reporting period
+    # First date the numbers may be used: filing_date when known, otherwise period_end
+    # plus the SEBI LODR Reg. 33 lag (scoring/fundamental/point_in_time.available_from).
+    available_from = Column(Date)
+    available_from_source = Column(String)                      # 'published' or 'lodr_lag'
 
     # === INCOME STATEMENT ===
     revenue = Column(Float)
