@@ -675,6 +675,32 @@ def _size_check_lines(size: pd.DataFrame | None) -> list[str]:
     return out
 
 
+def resolution_note(res: rs.StudyResult, compare: rs.StudyResult | None = None) -> str:
+    """
+    One line on the bootstrap's resolution. p boot >= 1/(N + 1); with k tests of a family of
+    m tied at that floor, BH gives them q = m / (k (N + 1)), so the single-test floor
+    m / (N + 1) of the pre-registration holds only for k = 1. The k of each family is listed.
+    """
+    n1 = rs.ROBUST_BOOT_N + 1
+    floor = 1.0 / n1
+    parts = []
+    for label, r in [("index" if compare is not None else None, res),
+                     *([("active", compare)] if compare is not None else [])]:
+        if r is None or "p_boot" not in r.tests.columns:
+            continue
+        for fam, df in _family_frames(r):
+            m = int(df["p_boot"].notna().sum())
+            k = int((df["p_boot"] <= floor * (1 + 1e-9)).sum())
+            q = df["q_boot"].min()
+            parts.append(f"{label + ' ' if label else ''}{fam}: {k} of {m} at the floor"
+                         + (f", min q boot {_q(q)}" if np.isfinite(q) else ""))
+    return (f"Bootstrap resolution: with {rs.ROBUST_BOOT_N} draws p boot ≥ 1/{n1} ≈ {floor:.4f} "
+            "(no draw as extreme as the mean). For a single top test at that floor the smallest "
+            f"q boot is m/{n1} (35/{n1} ≈ {35 / n1:.3f} for H1–H5, 6/{n1} ≈ {6 / n1:.3f} for H6); "
+            f"k tests tied at the floor all get m/(k·{n1}), so the minimum q boot can be lower: "
+            + "; ".join(parts) + ".\n")
+
+
 def _robust_section(res: rs.StudyResult, compare: rs.StudyResult | None,
                     size: pd.DataFrame | None) -> list[str]:
     out = ["## Robust inference (pre-registered)\n",
@@ -717,13 +743,7 @@ def _robust_section(res: rs.StudyResult, compare: rs.StudyResult | None,
         out.append("The four H4 tests that are *supported* under the lag-H rule in the earlier "
                    "reports, always listed:\n")
         out.append(_table(_with_test_label(h4), _ROBUST_TEST_COLS))
-    fams = [len(df) for _, df in _family_frames(res)]
-    out.append(f"Bootstrap resolution: with {rs.ROBUST_BOOT_N} draws p boot ≥ 1/"
-               f"{rs.ROBUST_BOOT_N + 1} ≈ {1 / (rs.ROBUST_BOOT_N + 1):.4f}, so the smallest "
-               "attainable q boot of a family's top test is "
-               + " and ".join(f"{m}/{rs.ROBUST_BOOT_N + 1} ≈ {m / (rs.ROBUST_BOOT_N + 1):.3f} "
-                              f"({fam})" for fam, m in zip(("H1–H5", "H6"), fams))
-               + "; a test at that floor had no bootstrap draw as extreme as its mean.\n")
+    out.append(resolution_note(res, compare))
     out.extend(_size_check_lines(size))
     out.append(ROBUST_OPTIONS_PARAGRAPH + "\n")
     return out

@@ -278,7 +278,7 @@ def test_report_section_and_options(studies):
     assert text.index("## H6: real minus shuffled null") < text.index("## Robust inference")
     assert text.index("## Robust inference") < text.index("## Options for Ankit")
     assert "robust inference 3 s (size check 2 s of it)" in text
-    assert "35/2001" in text and "6/2001" in text
+    assert "35/2001" in text and "6/2001" in text and "at the floor" in text
     assert runner.ROBUST_OPTIONS_PARAGRAPH in text
     assert "**The robust rules still over-reject**" in text and "auto on AR(1)" in text
     for name, target in runner.H4_SUPPORTED_TODAY:
@@ -286,6 +286,23 @@ def test_report_section_and_options(studies):
     off = runner.render_report(studies["off"], info, date(2026, 10, 20), elapsed_s=1.0,
                                rss_mb=100.0, git_hash="abc1234", end=None)
     assert "## Robust inference" not in off
+
+
+def test_resolution_note_counts_ties_at_the_floor():
+    from scripts import regime_study as runner
+
+    floor = 1 / (rs.ROBUST_BOOT_N + 1)
+    p = np.r_[floor, floor, floor, np.full(32, 0.5)]
+    tests = pd.DataFrame({"p_boot": p, "q_boot": bh_adjust(p)})
+    res = rs.StudyResult(splits=[], oos=pd.DatetimeIndex([]), base_rates_real=pd.DataFrame(),
+                         base_rates_null=pd.DataFrame(), hurst_real={}, hurst_null={},
+                         tests=tests, group_means=pd.DataFrame(),
+                         null_conditional=pd.DataFrame(), null_rank=pd.DataFrame(),
+                         hit_quintiles=pd.DataFrame(), churn=pd.DataFrame())
+    note = runner.resolution_note(res)
+    assert tests["q_boot"].min() == pytest.approx(35 / (3 * 2001))
+    assert "H1–H5: 3 of 35 at the floor, min q boot 0.006" in note
+    assert note.count("\n") == 1
 
 
 def test_robust_changes_lists_every_disagreement(studies):

@@ -95,6 +95,9 @@ DB data; H1-H6, their targets, thresholds, spans, seeds and the verdict rule are
     1/2001, so the smallest attainable q of the top test is 35/2001 ~ 0.017 (H1-H5) and
     6/2001 ~ 0.003 (H6). These are checks next to the pre-registered verdict, which is
     not replaced; the report lists every test whose verdict changes.
+    Correction (2026-10-20, after the first run; no rule changed): the q floor above holds
+    for a single test at p = 1/2001. When k tests of a family of m tie at that p, BH gives
+    each of them m / (k * 2001), e.g. 35 / (3 * 2001) ~ 0.006 for three H1-H5 tests.
     Size check (run once, reported, not tuned against): seeded synthetic per-date series
     of ``SIZE_CHECK_N`` = 690 values with true mean 0, horizon ``SIZE_CHECK_HORIZON`` =
     20, ``SIZE_CHECK_RUNS`` = 200 seeds per DGP, run k of DGP d drawing from
