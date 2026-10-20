@@ -27,7 +27,7 @@ anything that changes the architecture.
 ## Layout
 
 ```
-main.py                         CLI: setup | ingest | run | status | gaps | dq | score | evaluate
+main.py                         CLI: setup | ingest | run | status | gaps | dq | score | evaluate | constituents
 investbot/config/               settings (.env), tickers, tax regimes
 investbot/data/                 SQLAlchemy models, db session, seed, ingestion (yfinance)
 investbot/scheduler/            APScheduler jobs
@@ -50,7 +50,7 @@ source .venv/bin/activate
 python -m pytest -q                  # must pass before every commit
 python -m scripts.smoke_indicators   # needs an ingested DB
 python main.py status                # DB row counts
-python main.py ingest                # full re-ingest (slow, hits yfinance)
+python main.py ingest                # incremental ingest, hits yfinance (--full: full history; --members: past index members)
 ```
 
 ## Build order (Phase 2 and on)

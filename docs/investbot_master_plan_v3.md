@@ -17,6 +17,7 @@ The file keeps its v3 name because CLAUDE.md links to it. Where CLAUDE.md and th
    - REGIME_CONFIDENCE as a smoothed top-two gap (Decided 2026-10-18 "REGIME_CONFIDENCE"): §2.3 output bullet.
    - S/R strength normalisation (Decided 2026-10-18 "Support/resistance"): §5.1 custom-indicator table, S/R row.
    - Retired-from-index means deactivated (Decided 2026-10-18 "Retired-from-index means deactivated"): Phase 1 task 3.
+8. **Facts fixed to match the code (task 360, 2026-10-20).** §5.1 Hurst row (rolling DFA-1, windows 100 and 250, was R/S), Phase 2 task 7 (Hurst windows 100/250, label window 100, Rosenstein Lyapunov, was 50/100/200), Phase 7 task 9 (285 feature columns, was "145+"), and the regime-study open question now points to the 2026-10-20 H6 and task-350 results. The 0-100 text is unchanged.
 
 **Open questions affecting this plan.** These are still under **Pending** in `docs/DECISIONS_PENDING.md`; the plan text they touch is unchanged and not resolved here.
 
@@ -31,7 +32,7 @@ The file keeps its v3 name because CLAUDE.md links to it. Where CLAUDE.md and th
 - 2026-10-18 *Quintiles of discrete signals*, *"Promising" rule details*, *Harness finding for you: SIG_RVOL_CONFIRM polarity*, *Point-in-time universe: judgment calls*: §9.4 and the polarity wording in §5.1.
 - 2026-10-18 *Corporate actions: an ex-dated table instead of a periodic `adj_close` re-download*: §9.4 (total-return labels).
 - 2026-10-18 *Index membership: how far back, and temporary members*: §9.4 (point-in-time universe).
-- 2026-10-18 *Regime study: results* (with its 2026-10-19 re-run): §2.3 and §9.4. Options include re-fitting regime thresholds, changing the smoothing span, or a fixed Black-Litterman / risk-parity blend, which would affect §2.7 Layer 2.
+- 2026-10-18 *Regime study: results* (with its 2026-10-19 re-run): §2.3 and §9.4. Options include re-fitting regime thresholds, changing the smoothing span, or a fixed Black-Litterman / risk-parity blend, which would affect §2.7 Layer 2. Latest evidence: the 2026-10-20 H6 section (real minus shuffled null, task 330, `docs/reports/regime_study_20261020.md`: 0 of 6 supported) and the task-350 robust-inference section (`docs/reports/regime_study_20261020_b.md`: no verdict change in the index universe).
 - 2026-10-19 *Polarity variants: harness results*: §5.1 polarity wording and §9.4.
 - 2026-10-19 *Total-return labels: judgment calls*: §9.4.
 - Not decided anywhere: how the combined layer maps the [-1, 1] technical score onto the 0-100 scale used in §4.5, §5.4 and §6 (see the §5.1 note), and the design of the cross-asset-class layer (§6) and of institutional flow (§5.5).
@@ -980,7 +981,7 @@ EBSW (Even Better Sine Wave)
 
 | Indicator | Implementation | Purpose |
 |---|---|---|
-| Hurst Exponent (rolling 100-bar) | R/S analysis on rolling window | Regime detection |
+| Hurst Exponent (rolling, 100 and 250 bars) | Rolling DFA-1 (detrended fluctuation analysis) on log returns, `HURST_WINDOWS = (100, 250)` in `regime.py`; R/S analysis was not used because it is biased upwards on short samples | Regime detection |
 | Lyapunov Exponent (simplified) | Divergence rate of nearby trajectories | Chaos detection |
 | Volume-Weighted S/R Zones | Swing-pivot clusters (3/3 pivots, ATR-based cluster tolerance 0.25 × ATR_14, `SR_STRENGTH_*` as a 0–1 share of total recency weight, comparable across assets) plus volume profile (`VP_POS` clipped, `VP_DIST` unclipped in ATR units) | Key levels |
 | Fibonacci Retracement Levels | 23.6%, 38.2%, 50%, 61.8%, 78.6% | Order flow clustering |
@@ -1502,7 +1503,7 @@ What these reports mean for weights, polarity and the regime layer is decided by
 4. Fibonacci retracement level computation
 5. Candlestick pattern detection (all patterns listed in §5.1)
 6. Multi-timeframe module: 15m + 1h + daily alignment, weighted 1/2/3
-7. Regime detection: rolling Hurst exponent (multiple window sizes: 50, 100, 200 bars), simplified Lyapunov estimate
+7. Regime detection: rolling Hurst exponent by DFA-1 (windows 100 and 250 bars, `HURST_WINDOWS`; the regime label reads the 100-bar window, `REGIME_WINDOW = 100`) and a rolling largest Lyapunov exponent (Rosenstein estimate, same windows)
 8. Technical scorer: price_data → (technical_score, regime_confidence, signal_reasons)
 9. Cache indicators in indicator_cache table
 10. Unit tests against known indicator values
@@ -1608,7 +1609,7 @@ What these reports mean for weights, polarity and the regime layer is decided by
 6. Measure tax alpha: compare tax-aware vs tax-naive versions
 7. Benchmark against buy-and-hold NIFTY50 (equal-weight)
 8. Generate backtest report with go/no-go assessment
-9. Export ML training dataset: every timestamp's full indicator values (145+ features) paired with actual forward returns
+9. Export ML training dataset: every timestamp's full feature values (285 columns: 112 indicators, 125 candle-pattern, 26 support/resistance, 13 regime and 9 confluence columns, of which `TECH_REASONS` is text; counted from `compute_daily_frame` output minus the 6 OHLCV pass-through columns) paired with actual forward returns
 10. Diagnostic pass: for any failing metric, trace to responsible phase using decision framework (§9.2)
 
 **Deliverable:** Report showing strategy performance vs benchmark, per risk profile, with confidence metrics. Plus: labeled dataset ready for ML model training. This determines whether we proceed to real money.
