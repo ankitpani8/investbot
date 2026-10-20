@@ -65,6 +65,50 @@ on real data; H1-H5 above and their BH family are unchanged)
     BH over the 6 H6 tests as their own family; the same ``verdict`` rule
     (q < 0.10 and the expected sign in >= 70% of the test blocks).
 
+Pre-registered robust inference (task 350, written 2026-10-20 before any robust run on
+DB data; H1-H6, their targets, thresholds, spans, seeds and the verdict rule are unchanged)
+    Why: every verdict above rests on a Newey-West t at the fixed lag H. REALVOL_250
+    keeps the H4/H6 per-date statistics persistent for ~250 bars, and task 330 found
+    |t| ~ 4 at a true mean of 0 on synthetic iid panels of ~480 OOS dates, so the lag-H
+    t over-rejects there. Two robust checks of task 340 are added next to the existing
+    columns (``robust_summary``), on the **same per-date series and dates** as the
+    existing summary of each test. Constants are imported from ``stats.py``, not
+    redefined: ``ROBUST_BOOT_N`` = 2000, ``ROBUST_BOOT_SEED`` = 20261020,
+    ``ROBUST_MAX_LAG_FRAC`` = 0.25, ``ROBUST_RHO_CLIP`` = 0.97.
+        H          the lag each test uses today: ``_summary(x, h)`` and
+                   ``ic_summary(ic, h + 1)`` both use lag h (H = 20, 60, or 100 for
+                   FWD_HURST_100).
+        acf1       ``stats.acf`` of the finite values at lag 1 (descriptive).
+        lag_auto   max(H, ``andrews_bartlett_lag(x, min_lag=H)``). The outer max matters:
+                   the cap floor(0.25 n) of ``andrews_bartlett_lag`` beats ``min_lag``, and
+                   for the H6 chaos - rest tests (n ~ 45, H = 20) the cap is 11, so without
+                   it the lag would be less conservative than the current one.
+        t_auto     ``newey_west_tstat(x, lag_auto)``; p_auto = ``normal_pvalue(t_auto)``.
+        boot_block max(H, lag_auto + 1, round(n ** (1/3))).
+        p_boot     ``block_bootstrap_mean_pvalue(x, boot_block)``: centred series,
+                   ``ROBUST_BOOT_N`` draws, seed ``ROBUST_BOOT_SEED``; NaN below
+                   ``performance.BOOTSTRAP_MIN_PERIODS`` (20) finite values.
+    q-values: ``q_auto`` / ``q_boot`` are BH of p_auto / p_boot within the **existing
+    families**: H1-H5 is one family of 35 tests, H6 its own family of 6. ``verdict_auto``
+    / ``verdict_boot`` are the unchanged ``verdict`` rule with q replaced, so the block
+    share and the sign are the same as for ``verdict``. Bootstrap resolution: p_boot >=
+    1/2001, so the smallest attainable q of the top test is 35/2001 ~ 0.017 (H1-H5) and
+    6/2001 ~ 0.003 (H6). These are checks next to the pre-registered verdict, which is
+    not replaced; the report lists every test whose verdict changes.
+    Size check (run once, reported, not tuned against): seeded synthetic per-date series
+    of ``SIZE_CHECK_N`` = 690 values with true mean 0, horizon ``SIZE_CHECK_HORIZON`` =
+    20, ``SIZE_CHECK_RUNS`` = 200 seeds per DGP, run k of DGP d drawing from
+    ``np.random.default_rng((SIZE_CHECK_SEED, d, k))``, ``SIZE_CHECK_SEED`` = 20261020:
+        d = 1  AR(1), rho = ``SIZE_CHECK_AR_RHO`` = 0.99: z = standard_normal(n),
+               x_0 = z_0 / sqrt(1 - rho^2), x_t = rho x_{t-1} + z_t.
+        d = 2  overlap of a ``SIZE_CHECK_WINDOW`` = 250 window (mimics REALVOL_250):
+               e = standard_normal(n + 249), then u = standard_normal(n);
+               x_t = sqrt(250) * mean(e_t .. e_{t+249}) + u_t, so the rolling-mean part
+               and the iid N(0, 1) noise have equal (unit) variance.
+    Reported: the share of runs with two-sided p < ``SIZE_CHECK_LEVEL`` = 0.05 for the
+    fixed lag H (``normal_pvalue(newey_west_tstat(x, H))``), p_auto and p_boot. If
+    auto or boot still over-rejects badly, the report says so; no other method is added.
+
 Features vs labels
     ``regime_conditioning`` returns features (bar t uses bars <= t only,
     tested for truncation invariance). ``forward_regime_targets`` returns
@@ -121,7 +165,19 @@ from investbot.evaluation.metrics import (
     ic_summary,
     quantile_buckets,
 )
-from investbot.evaluation.stats import bh_adjust, newey_west_tstat, normal_pvalue
+from investbot.evaluation.performance import BOOTSTRAP_MIN_PERIODS
+from investbot.evaluation.stats import (
+    ROBUST_BOOT_N,
+    ROBUST_BOOT_SEED,
+    ROBUST_MAX_LAG_FRAC,
+    ROBUST_RHO_CLIP,
+    acf,
+    andrews_bartlett_lag,
+    bh_adjust,
+    block_bootstrap_mean_pvalue,
+    newey_west_tstat,
+    normal_pvalue,
+)
 from investbot.evaluation.walkforward import Split, oos_dates, walk_forward_splits
 from investbot.scoring.technical import regime
 
@@ -132,6 +188,21 @@ NULL_SEED: int = 20261018
 MIN_GROUP_NAMES: int = 3
 #: H6 (pre-registered): shuffled-null seeds; the first is NULL_SEED (the existing null panel).
 NULL_EXCESS_SEEDS: tuple[int, ...] = (20261018, 20261019, 20261020, 20261021, 20261022)
+
+# Pre-registered robust inference (task 350; see the module docstring). The bootstrap and
+# Andrews constants are the task-340 ones from ``stats.py``, imported above, not redefined.
+#: Columns ``robust_summary`` returns, appended after the existing columns of each test.
+ROBUST_COLUMNS: tuple[str, ...] = ("acf1", "lag_auto", "t_auto", "p_auto", "boot_block", "p_boot")
+#: Columns ``run_study(robust=True)`` appends to ``tests`` and ``h6`` after ``ROBUST_COLUMNS``.
+ROBUST_VERDICT_COLUMNS: tuple[str, ...] = ("q_auto", "q_boot", "verdict_auto", "verdict_boot")
+#: Size check of the three inference rules (run once, reported, not tuned against).
+SIZE_CHECK_N: int = 690
+SIZE_CHECK_HORIZON: int = 20
+SIZE_CHECK_RUNS: int = 200
+SIZE_CHECK_SEED: int = 20261020
+SIZE_CHECK_AR_RHO: float = 0.99
+SIZE_CHECK_WINDOW: int = 250
+SIZE_CHECK_LEVEL: float = 0.05
 
 #: Confidence levels whose crossings count as churn.
 CROSSING_LEVELS: tuple[float, ...] = (0.1, 0.5)
