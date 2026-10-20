@@ -130,6 +130,62 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] Robust-inference follow-up (task 340): the quintile spread t-stats (`spread_t_nw`, and `pooled_t_nw` in the regime rows) use the same fixed lag h − 1 and have the same issue; they are not covered by task 340 (no verdict reads them, but the report prints them).
 - [ ] Robust-inference follow-up (task 340, Ankit's call): with `ROBUST_BOOT_N = 2000` the bootstrap p has a floor of 1/2001, so in a 141-test BH family the smallest attainable q boot is 0.070 and the top test's boot verdict is a 0-vs-1 count of extreme draws. If the boot q is ever to be used as a rule, raise the draw count first (e.g. 20 000; runtime ~10× the 25 s step unless indices are cached per (n, block)) under a new pre-registration.
 
+### Evaluation: results
+
+- [x] **Task 400: harness and regime study on full history** (`agent/400-eval-full-history`): `docs/reports/eval_20261020_b.md` and `docs/reports/regime_study_20261020_c.md`, default pre-registered settings, no signal, threshold or polarity changed, no code change. Scratch DB: prices 1991-01-02 → 2026-10-19 (322 816 rows, 51 priced names), 1856 `corporate_actions` rows; `index_membership` was empty on the copy, so `python main.py setup` was run on it first (local seed, as in tasks 170/180). Runtime 24 min (evaluate, peak RSS 1.25 GB) and 18 min (regime study, 1.1 GB), one asset at a time.
+  - **OOS period:** 57 test blocks of 6 months, 1998-07-01 → 2026-10-19, 7013 dates (~28 years), vs 6 blocks, 2024-01-01 → 2026-10-16, 690 dates (~2.8 years) in the 5-year run (`eval_20261020.md`): 10× the OOS dates.
+  - **Survivorship:** membership before 2019-03-29 (`COMPLETE_FROM`) is not sourced and falls back to today's active stocks: 5147 of the 7013 OOS dates (73%). Over that stretch the universe is today's survivors back-filled, which is why the equal-weight universe CAGR reads +27% to +31% a year (5-year run: +4% to +5%). Absolute CAGRs are inflated; read net − universe and IC, not levels. The 20 members without price rows are still missing (OOS coverage mean 76.6%, min 32.0% on 1998-08-03; 5-year run 95.3%).
+  - **Dividend coverage:** 51 of 51 priced names have dividend rows in the panel window (1747 dividends, ex-dates 1994-06-03 → 2026-10-16; 109 splits). TR adds ~2.4%/yr to the universe CAGR and ~1.6–2.0%/yr to the held portfolios, IC unchanged to 3 decimals. Two unadjusted ×1.1 bonus issues (BEL.NS, ICICIBANK.NS, 2017) NaN 46 label periods.
+  - Comparison (headline family: next-open total-return labels, point-in-time index universe; BH over the same 141 tests in both runs; "held net vs univ." = top-quintile held portfolio CAGR net of the 0.32% round trip vs the equal-weight universe over the same periods; "promising" = q < 0.10 and block sign share ≥ 70%; n/r = not in the 5-year report, which prints SIG_* rows only in the top-15 tables, mean IC from its "Universe effect" table):
+
+| signal | h | mean IC 5y → full | NW t 5y → full | BH q 5y → full | held net vs univ. CAGR, 5y | held net vs univ. CAGR, full | promising, full |
+|---|---|---|---|---|---|---|---|
+| TECH_SCORE | 1 | -0.004 → +0.009 | -0.50 → +3.61 | 0.958 → 0.001 | -20.92% vs +5.11% | -3.26% vs +30.95% | no |
+| TECH_SCORE | 5 | -0.003 → -0.014 | -0.22 → -2.94 | 0.982 → 0.010 | -4.04% vs +4.18% | +10.67% vs +27.55% | no |
+| TECH_SCORE | 20 | -0.031 → -0.017 | -1.25 → -2.01 | 0.955 → 0.078 | +0.54% vs +4.79% | +20.27% vs +27.01% | no |
+| TECH_SCORE_TREND | 1 | -0.001 → +0.005 | -0.19 → +1.79 | 0.985 → 0.112 | -16.19% vs +5.11% | +2.60% vs +30.95% | no |
+| TECH_SCORE_TREND | 5 | -0.010 → -0.011 | -0.69 → -2.28 | 0.958 → 0.049 | -5.35% vs +4.18% | +12.76% vs +27.55% | no |
+| TECH_SCORE_TREND | 20 | -0.046 → -0.017 | -1.77 → -1.85 | 0.736 → 0.104 | +1.30% vs +4.79% | +21.91% vs +27.01% | no |
+| TECH_SCORE_MOMENTUM | 1 | -0.001 → +0.014 | -0.13 → +5.76 | 0.985 → 0.000 | -24.77% vs +5.11% | -8.97% vs +30.95% | no |
+| TECH_SCORE_MOMENTUM | 5 | +0.005 → -0.012 | +0.41 → -2.87 | 0.958 → 0.012 | -4.83% vs +4.18% | +4.69% vs +27.55% | no |
+| TECH_SCORE_MOMENTUM | 20 | -0.001 → -0.012 | -0.04 → -1.81 | 0.989 → 0.109 | +3.49% vs +4.79% | +20.08% vs +27.01% | no |
+| TECH_SCORE_VOLATILITY | 1 | -0.003 → +0.013 | -0.42 → +5.07 | 0.958 → 0.000 | -24.73% vs +5.11% | -4.21% vs +30.95% | no |
+| TECH_SCORE_VOLATILITY | 5 | -0.001 → -0.014 | -0.09 → -3.40 | 0.985 → 0.003 | -7.03% vs +4.18% | +9.23% vs +27.55% | no |
+| TECH_SCORE_VOLATILITY | 20 | -0.021 → -0.014 | -0.93 → -2.01 | 0.955 → 0.078 | -0.85% vs +4.79% | +17.51% vs +27.01% | no |
+| TECH_SCORE_VOLUME | 1 | -0.007 → +0.005 | -1.08 → +1.87 | 0.955 → 0.102 | -22.71% vs +5.11% | -5.19% vs +30.95% | no |
+| TECH_SCORE_VOLUME | 5 | +0.011 → -0.012 | +0.88 → -2.95 | 0.955 → 0.010 | -0.68% vs +4.18% | +10.98% vs +27.55% | inverted |
+| TECH_SCORE_VOLUME | 20 | -0.004 → -0.012 | -0.19 → -1.80 | 0.985 → 0.109 | +0.70% vs +4.79% | +20.45% vs +27.01% | no |
+| TECH_SCORE_PATTERN | 1 | -0.008 → +0.018 | -1.30 → +8.27 | 0.955 → 0.000 | -46.15% vs +5.11% | -23.96% vs +30.95% | as designed |
+| TECH_SCORE_PATTERN | 5 | +0.002 → +0.001 | +0.43 → +0.41 | 0.958 → 0.736 | -4.76% vs +4.18% | +9.64% vs +27.55% | no |
+| TECH_SCORE_PATTERN | 20 | +0.003 → -0.002 | +0.53 → -0.93 | 0.958 → 0.429 | +8.26% vs +4.79% | +19.86% vs +27.01% | no |
+| TECH_SCORE_SR | 1 | -0.007 → +0.000 | -0.95 → +0.03 | 0.955 → 0.980 | -33.41% vs +5.11% | -12.84% vs +30.95% | no |
+| TECH_SCORE_SR | 5 | -0.011 → -0.009 | -0.95 → -2.30 | 0.955 → 0.049 | -5.66% vs +4.18% | +12.08% vs +27.55% | no |
+| TECH_SCORE_SR | 20 | -0.037 → -0.014 | -1.85 → -1.91 | 0.736 → 0.096 | -5.47% vs +4.79% | +21.76% vs +27.01% | no |
+| BASE_MOM_20 | 1 | +0.006 → +0.003 | +0.72 → +1.28 | 0.958 → 0.264 | -7.67% vs +5.11% | +7.11% vs +30.95% | no |
+| BASE_MOM_20 | 5 | +0.010 → -0.012 | +0.72 → -2.54 | 0.958 → 0.027 | +4.07% vs +4.18% | +17.31% vs +27.55% | no |
+| BASE_MOM_20 | 20 | -0.031 → -0.018 | -1.08 → -2.09 | 0.955 → 0.071 | +2.73% vs +4.79% | +22.10% vs +27.01% | no |
+| BASE_MOM_12_1 | 1 | -0.004 → +0.001 | -0.55 → +0.55 | 0.958 → 0.643 | -0.58% vs +5.11% | +28.07% vs +30.95% | no |
+| BASE_MOM_12_1 | 5 | +0.000 → +0.013 | +0.00 → +2.37 | 1.000 → 0.042 | +1.91% vs +4.18% | +29.00% vs +27.55% | no |
+| BASE_MOM_12_1 | 20 | -0.006 → +0.025 | -0.24 → +2.20 | 0.982 → 0.058 | +4.96% vs +4.79% | +29.24% vs +27.01% | no |
+| BASE_REV_5 | 1 | +0.016 → +0.002 | +2.17 → +0.83 | 0.523 → 0.489 | -21.43% vs +5.11% | +3.04% vs +30.95% | no |
+| BASE_REV_5 | 5 | +0.014 → +0.034 | +1.20 → +8.31 | 0.955 → 0.000 | -9.51% vs +4.18% | +19.06% vs +27.55% | as designed |
+| BASE_REV_5 | 20 | -0.004 → +0.017 | -0.27 → +3.16 | 0.982 → 0.005 | -6.97% vs +4.79% | +25.33% vs +27.01% | no |
+| BASE_LOWVOL_20 | 1 | +0.020 → +0.034 | +2.70 → +12.88 | 0.475 → 0.000 | -6.07% vs +5.11% | +16.69% vs +30.95% | as designed |
+| BASE_LOWVOL_20 | 5 | -0.003 → +0.013 | -0.25 → +2.69 | 0.982 → 0.019 | -2.94% vs +4.18% | +17.31% vs +27.55% | no |
+| BASE_LOWVOL_20 | 20 | -0.016 → -0.003 | -0.62 → -0.34 | 0.958 → 0.791 | +2.24% vs +4.79% | +23.91% vs +27.01% | no |
+| SIG_RVOL_CONFIRM | 1 | -0.023 → -0.006 | -3.48 → -2.69 | 0.071 → 0.019 | -53.23% vs +5.11% | -32.24% vs +30.95% | no |
+| SIG_RVOL_CONFIRM | 5 | -0.013 → -0.017 | -1.89 → -7.31 | 0.736 → 0.000 | -10.96% vs +4.18% | +8.31% vs +27.55% | inverted |
+| SIG_RVOL_CONFIRM | 20 | -0.009 → -0.009 | n/r → -3.74 | n/r → 0.001 | +2.14% vs +4.79% | +20.56% vs +27.01% | inverted |
+
+  - Promising tests: 1 → 27 of 141 (unchanged under the robust auto and boot rules). In the 5-year run only SIG_RVOL_CONFIRM h = 1 (inverted); on full history it drops out (q 0.019 but sign holds in 61% of blocks) and turns promising inverted at h = 5 and 20 instead. As designed: BASE_LOWVOL_20 h = 1, BASE_REV_5 h = 5, TECH_SCORE_PATTERN / SIG_CANDLES h = 1 and the h = 1 oscillators (SIG_ULTOSC, SIG_AD_FLOW, SIG_CCI, SIG_WILLR, SIG_STOCH, VAR_OSC_REVERT_MOMENTUM), SIG_FIB_SWING h = 5. Inverted at h = 5: the trend signals (EMA_20/50_POS, DI_SPREAD, AROON, MACD_HIST, ROC), TECH_SCORE_VOLUME, SIG_SR_POSITION and the momentum/regime polarity variants. TECH_SCORE itself has q 0.001 / 0.010 / 0.078 at h = 1/5/20 but is not promising at any horizon (positive at h = 1, negative at 5 and 20; block sign share below 70%).
+  - **None of the 27 promising tests beats the universe after costs**, designed or inverted (the inverted rows in the report's descriptive section included). Of all 141 headline rows only SIG_EMA_50_200_CROSS and BASE_MOM_12_1 at h = 5/20 have a held net CAGR above the universe (+1 to +2 points/yr), and neither is promising (MOM_12_1 q 0.042 / 0.058, block sign share < 70%).
+  - Pre- vs post-2019 (day-weighted mean of the report's "By year" rows, descriptive; 1998–2018 = today's-list fallback, 2020–2026 = sourced membership): most new h = 1 significance sits in the fallback years (TECH_SCORE_PATTERN +0.028 → −0.005, TECH_SCORE_MOMENTUM +0.020 → −0.002, TECH_SCORE h = 1 +0.015 → −0.005, BASE_MOM_12_1 h = 20 +0.034 → −0.004). Stable across both: BASE_LOWVOL_20 h = 1 (+0.036 / +0.031), BASE_REV_5 h = 5 (+0.039 / +0.021), SIG_RVOL_CONFIRM h = 5 (−0.018 / −0.017).
+  - Regime study, 5y (`regime_study_20261020_b.md`) → full: H1 persistence 0 → 0 supported (trend − range still indistinguishable), H2 chaos → vol expansion: the 5-year "wrong sign" on FWD_VOLX_60 is gone (now positive, q 0.073 / 0.226, not supported), H3 drawdown 0 → 0, H4 rank 4 → 6 supported (REGIME_SCORE_CHAOS and VOL_RATIO vs FWD_VOLX_20/60, plus both vs FWD_MDD_20), H5 confidence calibration 0 → 0 at every span. **H6 (real minus 5-seed shuffled null) 0 → 6 of 6 supported** (e.g. VOL_RATIO → FWD_VOLX_20 excess +0.141, t +14.4; chaos − rest +0.09 to +0.14 on 393 dates): with 10× the dates the volatility-clustering part survives the mechanical shared-denominator effect. The same 6 / 6 hold under the auto and boot rules, but the task-350 size check (both rules over-reject at ~250-bar overlap) still applies. Label flips 121.5 vs 132.2 per 1000 bars on the null (5y: 129.6 vs 130.5).
+- [ ] Human step before the next re-run (task 400 finding): the DB copy had **no `index_membership` rows and the pre-140 asset list** (WIPRO, BPCL, BRITANNIA, DIVISLAB, HEROMOTOCO, INDUSINDBK still active; BSE, ETERNAL, INDIGO, JIOFIN, MAXHEALTH and the 15 past members absent), so `python main.py ingest --members --full` had nothing to ingest and the 5 new constituents got no prices. Run `python main.py setup` on the real DB first (local seed, no network), then `python main.py ingest --full && python main.py ingest --members --full && python main.py dq`.
+- [ ] Report text follow-up (task 400): `report.py` prints the fixed caveat "Five years of daily history leave about three years out of sample …", which is wrong on full history (28 years OOS); the regime report's robust-inference paragraph says "H6 already showed that their excess over the shuffled null is not significant", which `regime_study_20261020_c.md` contradicts (H6 6 / 6 supported). Make both data-driven (OOS years from the splits, H6 verdicts from the result).
+- [ ] Survivorship follow-up (task 400): 73% of the full-history OOS dates sit before `COMPLETE_FROM` (2019-03-29) and use today's list. Sourcing the NIFTY50 change list back to 1998 (NSE Indices press releases / index review archives) would remove most of the remaining bias; until then, report post-2019 subsets next to the full OOS window. An optional `--start 2019-04-01` run is possible today but is a different (shorter) evaluation, not a pre-registered one.
+- [ ] Harness follow-up (task 400): the size-check DGP in the regime study is fixed at n = 690 (the 5-year OOS length); on 7013 OOS dates its over-rejection rate may differ. A size check at the actual n would be a new pre-registration.
+
 ## Phase 5d: tax and trading
 - [x] `trading/tax_rules.py`, `transaction_costs.py`, `lot_tracker.py`: regime params, FY label, calendar-month holding period, cost calculator, FIFO lots with realisations and unrealised-by-lot (`agent/110-transaction-costs-lots`)
 - [ ] DP charges: add the depository (CDSL/NSDL) charge plus the broker's DP fee per scrip per sell day to `estimate_costs` (not per order). Rate and who bills it needs checking against the broker's contract note.
