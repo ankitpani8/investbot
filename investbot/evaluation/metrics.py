@@ -218,6 +218,31 @@ def ic_robust(ic: pd.Series, horizon: int) -> dict[str, float]:
     return {k: out[k] for k in ROBUST_KEYS}
 
 
+#: Keys of ``ic_complete_split``, in this order (appended after the robust columns, task 420).
+SURVIVORSHIP_KEYS: tuple[str, ...] = ("ic_mean_pre_complete", "n_dates_pre_complete",
+                                      "ic_mean_post_complete", "n_dates_post_complete")
+
+
+def ic_complete_split(ic: pd.Series, complete_from) -> dict[str, float]:
+    """
+    Descriptive survivorship split of a per-date IC series (task 420): the mean IC and the
+    number of finite dates on dates before ``complete_from`` (membership unknown, today's list
+    used) and on or after it. Only partitions the series ``ic_summary`` already uses; no test,
+    no p-value. A side with no finite date has mean NaN and n = 0.
+    """
+    cut = pd.Timestamp(complete_from)
+    a = ic.to_numpy(dtype=np.float64)
+    fin = np.isfinite(a)
+    pre = np.asarray(ic.index < cut) & fin
+    post = np.asarray(ic.index >= cut) & fin
+    return {
+        "ic_mean_pre_complete": float(a[pre].mean()) if pre.any() else math.nan,
+        "n_dates_pre_complete": int(pre.sum()),
+        "ic_mean_post_complete": float(a[post].mean()) if post.any() else math.nan,
+        "n_dates_post_complete": int(post.sum()),
+    }
+
+
 def quantile_buckets(S: pd.DataFrame, Y: pd.DataFrame, min_names: int = MIN_NAMES,
                      n_q: int = N_QUANTILES) -> pd.DataFrame:
     """Bucket 1..n_q per cell (NaN outside the joint mask); ties share a bucket."""

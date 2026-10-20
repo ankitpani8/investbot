@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from investbot.data.index_membership import HISTORY_START
+from investbot.data.index_membership import COMPLETE_FROM, HISTORY_START
 from investbot.evaluation.baselines import BASELINE_COLUMNS
 from investbot.evaluation.evaluate import (
     BH_LABELS,
@@ -52,6 +52,7 @@ from investbot.evaluation.evaluate import (
     ROBUST_TIMING_KEY,
     evaluate,
     headline,
+    universe_mask,
 )
 from investbot.evaluation.labels import HORIZONS
 from investbot.evaluation.metrics import (
@@ -66,6 +67,7 @@ from investbot.evaluation.metrics import (
     ROBUST_RHO_CLIP,
     ROUND_TRIP_COST,
     SLIPPAGE_PER_SIDE,
+    SURVIVORSHIP_KEYS,
     statutory_round_trip_cost,
 )
 from investbot.evaluation.performance import (
@@ -155,6 +157,36 @@ class RunInfo:
     #: number of tests it ran on (BH rows with a finite ``ic_lag_auto``, both universes).
     robust_s: float = math.nan
     robust_n_tests: int = 0
+    #: Median number of names with a finite TECH_SCORE (inside the universe) per OOS date,
+    #: over the dates with >= MIN_NAMES of them (``oos_names_median``); NaN if unknown.
+    names_median: float = math.nan
+
+
+def history_caveat(splits: list[Split], info: RunInfo) -> str:
+    """The caveat on how much out-of-sample history there is, built from the run's splits."""
+    oos = oos_dates(splits)
+    if len(oos) == 0:
+        return "There are no out-of-sample dates in this run (too little history after warmup)."
+    start, end = oos.min(), oos.max()
+    years = (end - start).days / 365.25
+    names = (f"; median {info.names_median:.0f} names per OOS date"
+             if info.names_median == info.names_median else "")
+    return (f"Out-of-sample window: {start:%Y-%m-%d} → {end:%Y-%m-%d}, {len(oos)} dates "
+            f"({years:.1f} years), after warmup (EMA_200, regime window) and the first training "
+            f"year{names}.")
+
+
+def oos_names_median(features: pd.DataFrame, oos: pd.DatetimeIndex) -> float:
+    """Median over the OOS dates of the names with a finite TECH_SCORE (inside the universe when
+    ``IN_UNIVERSE`` is present), counting only the dates with >= MIN_NAMES of them: the dates
+    the metrics use. NaN if there are none."""
+    col = features["TECH_SCORE"]
+    mask = universe_mask(features)
+    if mask is not None:
+        col = col.where(mask)
+    counts = col.notna().groupby(level="date").sum().reindex(oos)
+    counts = counts[counts >= MIN_NAMES]
+    return float(counts.median()) if len(counts) else math.nan
 
 
 def universe_note(info: RunInfo) -> str:
@@ -753,6 +785,51 @@ def robust_section(table: pd.DataFrame, info: RunInfo | None = None) -> str:
     return "\n".join(out)
 
 
+# ──────────────────────────────────────────────────────────
+# Survivorship split (task 420)
+# ──────────────────────────────────────────────────────────
+
+def _same_sign(pre, post) -> str:
+    if not (np.isfinite(pre) and np.isfinite(post)):
+        return "–"
+    return "yes" if np.sign(pre) == np.sign(post) else "no"
+
+
+def survivorship_rows(head: pd.DataFrame) -> pd.DataFrame:
+    """Promising headline rows (by q) followed by TECH_SCORE at every horizon, with the
+    "same sign" column."""
+    prom = head[head["promising"].astype(bool)].sort_values(["ic_q", "signal", "horizon"])
+    tech = head[(head["signal"] == "TECH_SCORE") & ~head.index.isin(prom.index)]
+    sel = pd.concat([prom, tech.sort_values("horizon")])
+    return sel.assign(_same_sign=[_same_sign(a, b) for a, b in
+                                  zip(sel["ic_mean_pre_complete"], sel["ic_mean_post_complete"])])
+
+
+_SURVIVORSHIP_COLS = [
+    ("signal", "signal", _s), ("h", "horizon", _int),
+    ("mean IC before", "ic_mean_pre_complete", _f), ("dates before", "n_dates_pre_complete", _int),
+    ("mean IC from", "ic_mean_post_complete", _f), ("dates from", "n_dates_post_complete", _int),
+    ("same sign", "_same_sign", _s),
+]
+
+
+def survivorship_section(table: pd.DataFrame, info: RunInfo) -> str:
+    """"Survivorship split (descriptive)": mean IC before / from ``COMPLETE_FROM``."""
+    cut = info.complete_from or COMPLETE_FROM
+    out = ["## Survivorship split (descriptive)\n"]
+    head = headline(table)
+    if not all(k in head.columns for k in SURVIVORSHIP_KEYS) or head.empty:
+        out.append("The survivorship split was not computed for this table.\n")
+        return "\n".join(out)
+    out.append(
+        f"Mean IC of the promising tests and of TECH_SCORE, on the OOS dates before {cut} "
+        f"(\"before\") and on or after it (\"from\"), with the number of dates on each side. "
+        f"Dates before {cut} use today's constituent list (survivorship bias), so a mean IC "
+        "there can be inflated; no test is run and no verdict uses these columns.\n")
+    out.append(_table(survivorship_rows(head), _SURVIVORSHIP_COLS))
+    return "\n".join(out)
+
+
 def inverted_section(table: pd.DataFrame) -> str:
     """Descriptive held-portfolio view of promising-inverted signals (negated signal)."""
     inv = table[(table["label"] == "open") & (table["subset"] == INVERTED_SUBSET)]
@@ -858,6 +935,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     w("")
 
     w(robust_section(table, info))
+
+    w(survivorship_section(table, info))
 
     w(f"## Top {TOP_N} signals by |ICIR| (OOS, next-open {_label_name(info)} labels)\n")
     for h in horizons:
@@ -1004,8 +1083,7 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
 
     w("## Caveats\n")
     w(f"- {universe_note(info)}")
-    w("- Five years of daily history leave about three years out of sample after warmup "
-      "(EMA_200, regime window) and the first training year; ~50 names per date.")
+    w(f"- {history_caveat(splits, info)}")
     w("- A missing session (purged bar) is skipped, not filled: t+1 is the next *stored* bar.")
     w("- Total return credits gross cash dividends; dividend tax (slab rate) is not modelled, "
       "and neither is STCG/LTCG on the trades.")
@@ -1108,7 +1186,6 @@ def run_evaluation(
     ``universe="index"`` also evaluates the "active" universe on the same splits
     (the "Universe effect" table); ``table`` is the headline universe's metrics.
     """
-    from investbot.data.index_membership import COMPLETE_FROM
     from investbot.evaluation.loader import active_tickers
 
     from investbot.evaluation.loader import db_fingerprint
@@ -1165,6 +1242,7 @@ def run_evaluation(
                  **label_summary(label_info, set(features.index.get_level_values("ticker"))),
                  scorer_version=SCORER_VERSION, git_commit=git_commit(),
                  robust_s=timings.get(ROBUST_TIMING_KEY, math.nan),
+                 names_median=oos_names_median(features, oos_dates(splits)),
                  robust_n_tests=sum(int(t["ic_lag_auto"].notna().sum())
                                     for t in (table, compare) if t is not None))
     info = RunInfo(n_assets=features.index.get_level_values("ticker").nunique(),
@@ -1178,9 +1256,10 @@ def run_evaluation(
     out = table.assign(universe=universe)
     if compare is not None:
         out = pd.concat([out, compare.assign(universe="active")], ignore_index=True)
-    # the robust columns go last, so every pre-task-340 column keeps its position in the CSV
-    out = out[[c for c in out.columns if c not in ROBUST_COLUMNS]
-              + [c for c in ROBUST_COLUMNS if c in out.columns]]
+    # the robust (task 340) and survivorship (task 420) columns go last, so every earlier column
+    # keeps its position in the CSV
+    tail = [*ROBUST_COLUMNS, *SURVIVORSHIP_KEYS]
+    out = out[[c for c in out.columns if c not in tail] + [c for c in tail if c in out.columns]]
     out.to_csv(csv, index=False)
     report.write_text(render_report(table, splits, info, report_date, compare), encoding="utf-8")
     return report, csv, table, info

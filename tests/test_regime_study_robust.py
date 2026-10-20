@@ -279,7 +279,7 @@ def test_report_section_and_options(studies):
     assert text.index("## Robust inference") < text.index("## Options for Ankit")
     assert "robust inference 3 s (size check 2 s of it)" in text
     assert "35/2001" in text and "6/2001" in text and "at the floor" in text
-    assert runner.ROBUST_OPTIONS_PARAGRAPH in text
+    assert runner.robust_options_paragraph(on) in text
     assert "**The robust rules still over-reject**" in text and "auto on AR(1)" in text
     for name, target in runner.H4_SUPPORTED_TODAY:
         assert f"H4 {name} → {target}" in text

@@ -568,24 +568,63 @@ _ROBUST_TEST_COLS = [
     ("verdict boot", "verdict_boot", str),
 ]
 
-ROBUST_OPTIONS_PARAGRAPH = (
-    "**What the robust re-test would mean for the pending regime decision** (DECISIONS_PENDING "
-    "\"Regime study: results\", options (a)–(d)); this report does not choose. The four H4 "
-    "volatility tests (REGIME_SCORE_CHAOS / VOL_RATIO vs FWD_VOLX) are the only *supported* "
-    "results of H1–H5, and H6 already showed that their excess over the shuffled null is not "
-    "significant. If they stay *supported* under the automatic lag and the bootstrap, the raw "
-    "association is not an inference artefact, but it is still mostly the shared-denominator "
-    "mechanics H6 measures, so it does not by itself argue for keeping the chaos side as is (a) "
-    "or for a re-fit (b). If they become *not supported*, no pre-registered test of the regime "
-    "layer survives autocorrelation-robust inference: that removes the last evidence that the "
-    "regime inputs carry a signal on daily NIFTY50, which strengthens (d) (a fixed Black-"
-    "Litterman ↔ risk-parity blend until a regime signal passes) and weakens (b) (fitting "
-    "thresholds to inputs with no demonstrated signal). A robust rule can turn a test "
-    "*supported* only where it is less conservative than the lag-H t; the size check above says "
-    "how far either rule can be trusted on series as persistent as these, and a rule that still "
-    "over-rejects there makes a robust *supported* weak evidence while a robust *not supported* "
-    "stands. (c) (`CONFIDENCE_EMA_SPAN`) rests on the calibration and churn tables: H5 is not "
-    "supported under any rule unless the change table above lists an H5 test.")
+def _h6_labels(h6: pd.DataFrame, verdict: str) -> list[str]:
+    return [f"{x['name']} → {x['target']}" for _, x in h6[h6["verdict"] == verdict].iterrows()]
+
+
+def h6_robust_clauses(h6: pd.DataFrame) -> tuple[str, str]:
+    """The two H6-dependent clauses of the robust-options paragraph, chosen by the H6 verdicts
+    (``StudyResult.h6``, the lag-H ``verdict``): none supported, all supported, k of m supported
+    (the supported tests named), or H6 skipped (empty frame, ``--no-h6``)."""
+    m = len(h6)
+    if m == 0:
+        return ("and H6 was not run (`--no-h6`), so how much of their excess over the shuffled "
+                "null is shared-denominator mechanics is not measured here.",
+                "but without H6 it cannot be told apart from the shared-denominator mechanics, "
+                "so it does not by itself argue for keeping the chaos side as is (a) or for a "
+                "re-fit (b).")
+    supported = _h6_labels(h6, "supported")
+    k = len(supported)
+    if k == 0:
+        return ("and H6 already showed that their excess over the shuffled null is not "
+                f"significant (0 of {m} H6 tests supported).",
+                "but it is still mostly the shared-denominator mechanics H6 measures, so it does "
+                "not by itself argue for keeping the chaos side as is (a) or for a re-fit (b).")
+    if k == m:
+        return (f"and H6 found their excess over the shuffled null significant ({m} of {m} H6 "
+                "tests supported).",
+                "and, as H6 found an excess over the shuffled null in every test, it is not "
+                "only the shared-denominator mechanics H6 measures: that is evidence for keeping "
+                "the chaos side as is (a) or for a re-fit (b), subject to the persistence caveat "
+                "in the H6 section, and it concerns volatility only.")
+    return (f"and H6 found their excess over the shuffled null significant in {k} of {m} tests "
+            f"(supported: {', '.join(supported)}).",
+            "but H6 supports only part of it, so the rest is still the shared-denominator "
+            "mechanics H6 measures: the supported H6 tests are evidence for keeping the chaos "
+            "side as is (a) or for a re-fit (b) only as far as they go, subject to the "
+            "persistence caveat in the H6 section.")
+
+
+def robust_options_paragraph(res: rs.StudyResult) -> str:
+    """"What the robust re-test would mean ..." with the H6 clauses built from ``res.h6``."""
+    shown, mechanics = h6_robust_clauses(res.h6)
+    return (
+        "**What the robust re-test would mean for the pending regime decision** "
+        "(DECISIONS_PENDING \"Regime study: results\", options (a)–(d)); this report does not "
+        "choose. The four H4 volatility tests (REGIME_SCORE_CHAOS / VOL_RATIO vs FWD_VOLX) are "
+        "the only *supported* results of H1–H5, " + shown + " If they stay *supported* under "
+        "the automatic lag and the bootstrap, the raw association is not an inference artefact, "
+        + mechanics + " If they become *not supported*, no pre-registered test of the regime "
+        "layer survives autocorrelation-robust inference: that removes the last evidence that "
+        "the regime inputs carry a signal on daily NIFTY50, which strengthens (d) (a fixed "
+        "Black-Litterman ↔ risk-parity blend until a regime signal passes) and weakens (b) "
+        "(fitting thresholds to inputs with no demonstrated signal). A robust rule can turn a "
+        "test *supported* only where it is less conservative than the lag-H t; the size check "
+        "above says how far either rule can be trusted on series as persistent as these, and a "
+        "rule that still over-rejects there makes a robust *supported* weak evidence while a "
+        "robust *not supported* stands. (c) (`CONFIDENCE_EMA_SPAN`) rests on the calibration "
+        "and churn tables: H5 is not supported under any rule unless the change table above "
+        "lists an H5 test.")
 
 
 def _family_frames(r: rs.StudyResult) -> list[tuple[str, pd.DataFrame]]:
@@ -745,7 +784,7 @@ def _robust_section(res: rs.StudyResult, compare: rs.StudyResult | None,
         out.append(_table(_with_test_label(h4), _ROBUST_TEST_COLS))
     out.append(resolution_note(res, compare))
     out.extend(_size_check_lines(size))
-    out.append(ROBUST_OPTIONS_PARAGRAPH + "\n")
+    out.append(robust_options_paragraph(res) + "\n")
     return out
 
 

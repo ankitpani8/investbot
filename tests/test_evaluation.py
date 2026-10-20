@@ -399,3 +399,171 @@ def test_round_trip_cost_comes_from_config():
     from investbot.evaluation import metrics as m
     assert m.ROUND_TRIP_COST == pytest.approx(m.statutory_round_trip_cost() + 2 * m.SLIPPAGE_PER_SIDE)
     assert 0.0025 <= m.ROUND_TRIP_COST <= 0.0035          # master plan §2.8: ~0.25-0.35%
+
+
+# ──────────────────────────────────────────────────────────
+# Task 420: data-driven history caveat and the descriptive survivorship split
+# ──────────────────────────────────────────────────────────
+
+OLD_HISTORY_SENTENCE = "Five years of daily history leave about three years out of sample"
+
+
+def _splits_between(start: str, end: str):
+    cal = pd.bdate_range(start, end)
+    return walk_forward_splits(cal, embargo=5)
+
+
+def _run_info(**kw):
+    from investbot.evaluation.report import RunInfo
+    return RunInfo(12, pd.Timestamp("2000-01-03"), pd.Timestamp("2024-06-28"), (1, 5), None, **kw)
+
+
+def test_history_caveat_is_built_from_the_splits():
+    from investbot.evaluation.report import history_caveat
+    short = _splits_between("2021-01-01", "2023-12-29")
+    long = _splits_between("1995-01-02", "2024-06-28")
+    for splits in (short, long):
+        oos = oos_dates(splits)
+        text = history_caveat(splits, _run_info(names_median=48.0))
+        years = (oos.max() - oos.min()).days / 365.25
+        assert f"{oos.min():%Y-%m-%d} → {oos.max():%Y-%m-%d}" in text
+        assert f"{len(oos)} dates" in text and f"({years:.1f} years)" in text
+        assert "median 48 names per OOS date" in text
+    assert history_caveat(short, _run_info()) != history_caveat(long, _run_info())
+    assert "names per OOS date" not in history_caveat(short, _run_info())      # unknown median
+    assert "no out-of-sample dates" in history_caveat([], _run_info())
+
+
+def test_report_caveat_replaces_the_fixed_history_sentence(synthetic_eval):
+    from investbot.evaluation.report import history_caveat, render_report
+    table, splits = synthetic_eval
+    md = render_report(table, splits, _run_info(names_median=30.0), pd.Timestamp("2024-07-01").date())
+    assert OLD_HISTORY_SENTENCE not in md
+    assert history_caveat(splits, _run_info(names_median=30.0)) in md
+    assert "## Caveats" in md
+
+
+def test_oos_names_median_counts_finite_scores_per_oos_date():
+    from investbot.evaluation.report import oos_names_median
+    dates = pd.bdate_range("2024-01-01", periods=4, name="date")
+    tickers = [f"T{i:02d}" for i in range(14)]
+    idx = pd.MultiIndex.from_product([dates, tickers], names=["date", "ticker"])
+    score = np.ones(len(idx))
+    score[idx.get_level_values("date") == dates[1]] = np.nan
+    score[(idx.get_level_values("date") == dates[1]) & (idx.get_level_values("ticker") < "T11")] = 1.0
+    # per-date finite counts: 14, 11, 14, 14; dates[0] is not OOS
+    f = pd.DataFrame({"TECH_SCORE": score}, index=idx)
+    assert oos_names_median(f, dates[1:]) == 14.0
+    assert oos_names_median(f, dates[1:2]) == 11.0
+    f["TECH_SCORE"] = np.nan
+    assert math.isnan(oos_names_median(f, dates))
+
+
+def test_ic_complete_split_hand_values_around_the_cut():
+    from investbot.evaluation.metrics import SURVIVORSHIP_KEYS, ic_complete_split
+    idx = pd.to_datetime(["2019-03-26", "2019-03-27", "2019-03-28", "2019-03-29", "2019-04-01",
+                          "2019-04-02", "2019-04-03"])
+    ic = pd.Series([0.10, 0.20, np.nan, -0.30, 0.50, np.nan, 0.10], index=idx)
+    out = ic_complete_split(ic, pd.Timestamp("2019-03-29").date())
+    assert tuple(out) == SURVIVORSHIP_KEYS
+    assert out["ic_mean_pre_complete"] == pytest.approx(0.15)       # (0.10 + 0.20) / 2, NaN skipped
+    assert out["n_dates_pre_complete"] == 2
+    assert out["ic_mean_post_complete"] == pytest.approx((-0.30 + 0.50 + 0.10) / 3)
+    assert out["n_dates_post_complete"] == 3                        # the cut date itself is "post"
+
+
+def test_ic_complete_split_edges_are_nan_with_zero_dates():
+    from investbot.evaluation.metrics import ic_complete_split
+    idx = pd.bdate_range("2020-01-01", periods=5)
+    ic = pd.Series([0.1, 0.2, 0.3, np.nan, 0.4], index=idx)
+    all_post = ic_complete_split(ic, pd.Timestamp("2019-01-01").date())
+    assert math.isnan(all_post["ic_mean_pre_complete"]) and all_post["n_dates_pre_complete"] == 0
+    assert all_post["ic_mean_post_complete"] == pytest.approx(0.25)
+    assert all_post["n_dates_post_complete"] == 4
+    all_pre = ic_complete_split(ic, pd.Timestamp("2021-01-01").date())
+    assert math.isnan(all_pre["ic_mean_post_complete"]) and all_pre["n_dates_post_complete"] == 0
+    assert all_pre["ic_mean_pre_complete"] == pytest.approx(0.25) and all_pre["n_dates_pre_complete"] == 4
+    empty = ic_complete_split(ic.iloc[:0], pd.Timestamp("2020-01-03").date())
+    assert math.isnan(empty["ic_mean_pre_complete"]) and empty["n_dates_post_complete"] == 0
+
+
+@pytest.fixture(scope="module")
+def split_tables():
+    from investbot.evaluation.metrics import SURVIVORSHIP_KEYS
+    rng = np.random.default_rng(7)
+    dates = pd.bdate_range("2021-01-01", "2023-06-30")
+    idx = pd.MultiIndex.from_product([dates, [f"S{i:02d}" for i in range(14)]],
+                                     names=["date", "ticker"])
+    n = len(idx)
+    labels = pd.DataFrame({c: rng.normal(0, 0.02, n)
+                           for c in label_columns((1, 5), PRICE_STEMS)}, index=idx)
+    labels = labels.assign(**{c.replace(p, t, 1): labels[c] for p, t in zip(PRICE_STEMS, TR_STEMS)
+                              for c in label_columns((1, 5), (p,))})
+    features = pd.DataFrame({"TECH_SCORE": rng.normal(size=n),
+                             "ORACLE": labels["FWD_TR_RET_5"].to_numpy(),
+                             "REGIME": rng.integers(0, 2, n).astype(float),
+                             "REGIME_CONFIDENCE": rng.uniform(size=n)}, index=idx)
+    cut = pd.Timestamp("2022-10-03").date()
+    kw = dict(signals=["TECH_SCORE", "ORACLE"], robust=False)
+    table, splits = evaluate(features, labels, (1, 5), complete_from=cut, **kw)
+    plain, _ = evaluate(features, labels, (1, 5), complete_from=None, splits=splits, **kw)
+    return table, plain, splits, cut, SURVIVORSHIP_KEYS
+
+
+def test_split_columns_come_last_and_only_on_headline_rows(split_tables):
+    table, plain, _, _, keys = split_tables
+    assert list(table.columns[-4:]) == list(keys)
+    assert list(table.columns[:-4]) == list(plain.columns[:-4])
+    head = table[(table["label"] == "open") & (table["subset"] == "oos")]
+    rest = table.drop(head.index)
+    assert head[list(keys)].notna().all(axis=None)
+    assert rest[list(keys)].isna().all(axis=None)
+    assert plain[list(keys)].isna().all(axis=None)
+
+
+def test_existing_columns_are_bit_identical_with_the_split(split_tables):
+    table, plain, _, _, keys = split_tables
+    old = [c for c in table.columns if c not in keys]
+    pd.testing.assert_frame_equal(table[old], plain[old], check_exact=True)
+
+
+def test_split_means_match_the_row_ic_series(split_tables):
+    table, _, splits, cut, _ = split_tables
+    head = headline(table).set_index(["signal", "horizon"])
+    assert (head["n_dates_pre_complete"] + head["n_dates_post_complete"] == head["n_days"]).all()
+    assert (head["n_dates_pre_complete"] > 0).all() and (head["n_dates_post_complete"] > 0).all()
+    pooled = ((head["ic_mean_pre_complete"] * head["n_dates_pre_complete"]
+               + head["ic_mean_post_complete"] * head["n_dates_post_complete"])
+              / head["n_days"])
+    np.testing.assert_allclose(pooled, head["ic_mean"], atol=1e-12)
+    assert splits[0].test[0] < pd.Timestamp(cut) <= splits[-1].test[-1]
+
+
+def test_split_with_all_oos_dates_on_one_side(split_tables):
+    table, _, splits, _, _ = split_tables
+    pre = pd.Timestamp("2030-01-01").date()
+    post = pd.Timestamp("2000-01-01").date()
+    # re-use the stored OOS ICs through the public function instead of re-running evaluate
+    from investbot.evaluation.metrics import ic_complete_split
+    ic = pd.Series(np.linspace(-0.1, 0.1, len(oos_dates(splits))), index=oos_dates(splits))
+    a, b = ic_complete_split(ic, pre), ic_complete_split(ic, post)
+    assert a["n_dates_post_complete"] == 0 and math.isnan(a["ic_mean_post_complete"])
+    assert b["n_dates_pre_complete"] == 0 and math.isnan(b["ic_mean_pre_complete"])
+
+
+def test_survivorship_section_in_the_report(split_tables):
+    from investbot.evaluation.report import render_report, survivorship_rows
+    table, _, splits, cut, _ = split_tables
+    md = render_report(table, splits, _run_info(complete_from=cut, names_median=14.0),
+                       pd.Timestamp("2023-07-01").date())
+    assert "## Survivorship split (descriptive)" in md
+    assert md.index("## IC inference robustness") < md.index("## Survivorship split") \
+        < md.index("## Top ")
+    sec = md.split("## Survivorship split (descriptive)")[1].split("\n## ")[0]
+    assert "survivorship bias" in sec and "no test is run" in sec and str(cut) in sec
+    rows = survivorship_rows(headline(table))
+    assert {"TECH_SCORE"} <= set(rows["signal"])
+    assert (rows[rows["signal"] == "TECH_SCORE"]["horizon"].tolist() == [1, 5])
+    for _, r in rows.iterrows():
+        same = np.sign(r["ic_mean_pre_complete"]) == np.sign(r["ic_mean_post_complete"])
+        assert r["_same_sign"] == ("yes" if same else "no")

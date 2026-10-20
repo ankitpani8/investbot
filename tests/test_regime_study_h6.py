@@ -488,3 +488,64 @@ def test_h6_report_section_and_everything_else_unchanged(pit_h6_reports):
     csv = report.parent / "regime_study_h6_20261019_b.csv"
     assert csv.exists() and len(pd.read_csv(csv)) == 12
     pd.testing.assert_frame_equal(res.tests, pit_h6_reports[False][1].tests, check_exact=True)
+
+
+# ──────────────────────────────────────────────────────────
+# Task 420: the robust-options paragraph follows the H6 verdicts
+# ──────────────────────────────────────────────────────────
+
+def _h6_verdicts(verdicts: list[str]) -> pd.DataFrame:
+    names = [("chaos − rest", "FWD_VOLX_20"), ("chaos − rest", "FWD_VOLX_60"),
+             ("REGIME_SCORE_CHAOS", "FWD_VOLX_20"), ("REGIME_SCORE_CHAOS", "FWD_VOLX_60"),
+             ("VOL_RATIO", "FWD_VOLX_20"), ("VOL_RATIO", "FWD_VOLX_60")]
+    return pd.DataFrame({"name": [n for n, _ in names], "target": [t for _, t in names],
+                         "verdict": verdicts})
+
+
+OLD_NOT_SIGNIFICANT = "H6 already showed that their excess over the shuffled null is not significant"
+OLD_MECHANICS = "it is still mostly the shared-denominator mechanics H6 measures"
+
+
+@pytest.mark.parametrize("verdicts,case", [
+    (["not supported"] * 6, "none"),
+    (["supported"] * 6, "all"),
+    (["supported", "not supported", "supported", "wrong sign", "not supported", "supported"], "some"),
+])
+def test_robust_paragraph_picks_the_h6_variant(verdicts, case):
+    from scripts import regime_study as runner
+    shown, mechanics = runner.h6_robust_clauses(_h6_verdicts(verdicts))
+    if case == "none":
+        assert OLD_NOT_SIGNIFICANT in shown and "0 of 6" in shown
+        assert OLD_MECHANICS in mechanics
+    elif case == "all":
+        assert "6 of 6 H6 tests supported" in shown and "not significant" not in shown
+        assert OLD_MECHANICS not in mechanics and "not only the shared-denominator" in mechanics
+    else:
+        assert "in 3 of 6 tests" in shown
+        assert "chaos − rest → FWD_VOLX_20" in shown and "REGIME_SCORE_CHAOS → FWD_VOLX_20" in shown
+        assert "VOL_RATIO → FWD_VOLX_60" in shown
+        assert "VOL_RATIO → FWD_VOLX_20" not in shown and "wrong sign" not in shown
+        assert "only part of it" in mechanics and OLD_MECHANICS not in mechanics
+
+
+def test_robust_paragraph_when_h6_was_skipped():
+    from scripts import regime_study as runner
+    shown, mechanics = runner.h6_robust_clauses(pd.DataFrame())
+    assert "H6 was not run" in shown and "--no-h6" in shown
+    assert "without H6" in mechanics
+    assert OLD_NOT_SIGNIFICANT not in shown and OLD_MECHANICS not in mechanics
+
+
+def test_robust_paragraph_keeps_the_other_sentences_and_one_h6_variant():
+    from scripts import regime_study as runner
+
+    class Res:                      # only ``h6`` is read
+        h6 = _h6_verdicts(["supported"] * 6)
+    text = runner.robust_options_paragraph(Res())
+    for kept in ("If they stay *supported* under the automatic lag and the bootstrap",
+                 "If they become *not supported*", "strengthens (d)",
+                 "(c) (`CONFIDENCE_EMA_SPAN`) rests on the calibration and churn tables"):
+        assert kept in text
+    assert OLD_NOT_SIGNIFICANT not in text and OLD_MECHANICS not in text
+    Res.h6 = pd.DataFrame()
+    assert "H6 was not run" in runner.robust_options_paragraph(Res())

@@ -47,6 +47,12 @@ Every other row (``INVERTED_SUBSET`` included) has NaN there and False for the f
 columns come after every existing column, which stays bit-identical; ``robust=False`` skips
 the step (all NaN / False).
 
+Survivorship split (task 420, descriptive; no test): on the headline rows (label "open", subset
+"oos") only, ``metrics.ic_complete_split`` of the same per-date IC series adds
+``SURVIVORSHIP_KEYS`` (mean IC and number of dates before / from ``complete_from``, default
+``index_membership.COMPLETE_FROM``). They come after the robust columns; every other row has NaN
+there, and so does every row when ``complete_from=None``. No existing column or verdict changes.
+
 Every row with quintile metrics also has the open-to-open held portfolio
 (``held_*``, from ``FWD_TR_OO_RET_h``, or ``FWD_OO_RET_h`` on the "price" rows
 and when the primary return is "price") next to the open→close ``lo_*`` check.
@@ -77,12 +83,15 @@ import numpy as np
 import pandas as pd
 
 from investbot.config.scoring_weights import REGIME_NAMES
+from investbot.data.index_membership import COMPLETE_FROM
 from investbot.evaluation.labels import HORIZONS
 from investbot.evaluation.metrics import (
     MIN_NAMES,
     ROBUST_KEYS,
     ROUND_TRIP_COST,
     daily_ic,
+    SURVIVORSHIP_KEYS,
+    ic_complete_split,
     ic_robust,
     ic_summary,
     pooled_ic,
@@ -185,12 +194,15 @@ def evaluate(
     cost: float = ROUND_TRIP_COST,
     primary: str = PRIMARY_RETURN,
     robust: bool = True,
+    complete_from=COMPLETE_FROM,
     timings: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, list[Split]]:
     """(metrics table, walk-forward splits). See the module docstring for the rows.
 
     ``primary="price"`` gives the pre-task-200 table (no "price" comparison rows).
     ``robust=False`` skips the robust IC step (its columns stay NaN / False).
+    ``complete_from``: date splitting the headline OOS ICs into the survivorship columns
+    (``SURVIVORSHIP_KEYS``); None leaves them NaN.
     ``timings``: if given, the seconds of the robust step are added under
     ``ROBUST_TIMING_KEY``."""
     if primary not in RETURN_LABELS:
@@ -224,6 +236,8 @@ def evaluate(
     #: row position -> ``ic_robust`` of a BH row (OOS, label in BH_LABELS)
     robust_rows: dict[int, dict[str, float]] = {}
     robust_s = 0.0
+    #: row position -> ``ic_complete_split`` of a headline row
+    split_rows: dict[int, dict[str, float]] = {}
 
     def add_robust(ic_oos: pd.Series, h: int) -> None:
         nonlocal robust_s
@@ -251,6 +265,8 @@ def evaluate(
                                               Yo.loc[oos], boot("open", "oos")))
             ic = daily_ic(S, Y, min_names)
             add_robust(ic.loc[oos], h)     # per-date, so equal to the OOS row's own IC series
+            if complete_from is not None:
+                split_rows[len(rows) - 1] = ic_complete_split(ic.loc[oos], complete_from)
             add("all", "open", signal_metrics(S, Y, h, min_names, cost, Yo,
                                               boot("open", "all")))
             Yc = ys[("close", h)]
@@ -286,6 +302,7 @@ def evaluate(
     if timings is not None:
         timings[ROBUST_TIMING_KEY] = timings.get(ROBUST_TIMING_KEY, 0.0) + robust_s
     table = _add_multiple_testing(table, pd.DataFrame.from_dict(robust_rows, orient="index"))
+    table = _add_survivorship_split(table, split_rows)
     inverted = promising_inverted(table)
     extra = []
     for sig, h in inverted:
@@ -296,7 +313,8 @@ def evaluate(
                                        True),
                       "ic_q": np.nan, "block_sign_share": np.nan, "promising": False,
                       "direction": NEGATED_DIRECTION,
-                      **dict.fromkeys(ROBUST_KEYS, np.nan), **dict(ROBUST_VERDICT_COLUMNS)})
+                      **dict.fromkeys(ROBUST_KEYS, np.nan), **dict(ROBUST_VERDICT_COLUMNS),
+                      **dict.fromkeys(SURVIVORSHIP_KEYS, np.nan)})
     if extra:
         table = pd.concat([table, pd.DataFrame(extra)], ignore_index=True)
     return table, splits
@@ -360,6 +378,17 @@ def _add_multiple_testing(table: pd.DataFrame,
         table.loc[head, "direction"] = np.where(table.loc[head, "ic_mean"] >= 0, "as designed",
                                                 "inverted")
     return table
+
+
+def _add_survivorship_split(table: pd.DataFrame,
+                            split_rows: dict[int, dict[str, float]]) -> pd.DataFrame:
+    """Append ``SURVIVORSHIP_KEYS`` after every existing column: the ``ic_complete_split`` of
+    the headline rows in ``split_rows`` (keyed by row position), NaN elsewhere."""
+    cols = {k: np.full(len(table), np.nan) for k in SURVIVORSHIP_KEYS}
+    for pos, vals in split_rows.items():
+        for k in SURVIVORSHIP_KEYS:
+            cols[k][pos] = vals[k]
+    return pd.concat([table, pd.DataFrame(cols, index=table.index)], axis=1)
 
 
 def headline(table: pd.DataFrame, label: str = "open") -> pd.DataFrame:
