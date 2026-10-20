@@ -42,11 +42,13 @@ import pandas as pd
 from investbot.data.index_membership import HISTORY_START
 from investbot.evaluation.baselines import BASELINE_COLUMNS
 from investbot.evaluation.evaluate import (
+    BH_LABELS,
     COMPARISON_RETURN,
     INVERTED_SUBSET,
     PRIMARY_RETURN,
     PROMISING_Q,
     PROMISING_SIGN_SHARE,
+    ROBUST_TIMING_KEY,
     evaluate,
     headline,
 )
@@ -56,6 +58,11 @@ from investbot.evaluation.metrics import (
     POOLED_MIN_NAMES,
     REFERENCE_TRADE_VALUE,
     RISK_FREE_RATE_ANNUAL,
+    ROBUST_ACF_LAGS,
+    ROBUST_BOOT_N,
+    ROBUST_BOOT_SEED,
+    ROBUST_MAX_LAG_FRAC,
+    ROBUST_RHO_CLIP,
     ROUND_TRIP_COST,
     SLIPPAGE_PER_SIDE,
     statutory_round_trip_cost,
@@ -143,6 +150,10 @@ class RunInfo:
     db_max_date: date | None = None
     db_price_rows: int = 0
     db_action_rows: int = 0
+    #: Seconds in the robust IC step (``evaluate.ROBUST_TIMING_KEY``, both universes) and the
+    #: number of tests it ran on (BH rows with a finite ``ic_lag_auto``, both universes).
+    robust_s: float = math.nan
+    robust_n_tests: int = 0
 
 
 def universe_note(info: RunInfo) -> str:
@@ -640,6 +651,96 @@ def _setup_universe_lines(info: RunInfo) -> list[str]:
     return lines
 
 
+# ──────────────────────────────────────────────────────────
+# IC inference robustness (task 340)
+# ──────────────────────────────────────────────────────────
+
+def _yes_no(x) -> str:
+    return "yes" if bool(x) else "no"
+
+
+def _lag_text(h, lag) -> str:
+    return "–" if lag is None or not np.isfinite(lag) else f"{int(h) - 1} → {int(lag)}"
+
+
+_ROBUST_COLS = [
+    ("signal", "signal", _s), ("h", "horizon", _int), ("IC mean", "ic_mean", _f),
+    *[(f"ACF{lag}", f"ic_acf{lag}", lambda x: _f(x, "{:+.2f}")) for lag in ROBUST_ACF_LAGS],
+    ("lag h−1 → auto", "_lag_text", _s),
+    ("t NW", "ic_t_nw", lambda x: _f(x, "{:+.2f}")),
+    ("t auto", "ic_t_auto", lambda x: _f(x, "{:+.2f}")),
+    ("q", "ic_q", lambda x: _f(x, "{:.3f}")), ("q auto", "ic_q_auto", lambda x: _f(x, "{:.3f}")),
+    ("q boot", "ic_q_boot", lambda x: _f(x, "{:.3f}")),
+    ("promising", "promising", _yes_no), ("auto", "promising_auto", _yes_no),
+    ("boot", "promising_boot", _yes_no),
+]
+
+_FAMILY_NAMES = {"open": "Headline family (next-open, primary return)",
+                 COMPARISON_RETURN: "Price-only comparison family"}
+
+
+def robust_changes(fam: pd.DataFrame) -> dict[str, int]:
+    """Number of tests whose ``promising`` flag differs under the auto and boot q-values."""
+    base = fam["promising"].astype(bool)
+    return {kind: int((fam[f"promising_{kind}"].astype(bool) != base).sum())
+            for kind in ("auto", "boot")}
+
+
+def robust_rows(fam: pd.DataFrame) -> pd.DataFrame:
+    """Tests promising under any of the three rules, plus TECH_SCORE at every horizon."""
+    any_rule = (fam["promising"].astype(bool) | fam["promising_auto"].astype(bool)
+                | fam["promising_boot"].astype(bool) | (fam["signal"] == "TECH_SCORE"))
+    sel = fam[any_rule].sort_values(["signal", "horizon"])
+    return sel.assign(_lag_text=[_lag_text(h, lag) for h, lag in
+                                 zip(sel["horizon"], sel["ic_lag_auto"])])
+
+
+def robust_section(table: pd.DataFrame, info: RunInfo | None = None) -> str:
+    """"IC inference robustness (pre-registered)": the BH verdicts under the robust q-values."""
+    out = ["## IC inference robustness (pre-registered)\n"]
+    if "ic_p_auto" not in table.columns or not table["ic_p_auto"].notna().any():
+        out.append("The robust IC step did not run for this table.\n")
+        return "\n".join(out)
+    out.append(
+        "The verdict above uses a Newey-West t of the per-date IC series with a fixed lag h − 1, "
+        "which covers the label overlap but not any further persistence of the IC series (at "
+        "h = 1 it is a plain t-test). Two autocorrelation-robust p-values were pre-registered "
+        "before this run (task 340) and are BH-adjusted within the same families: **auto** = "
+        "Newey-West at the Andrews (1991) AR(1) plug-in lag for the Bartlett kernel, never below "
+        f"h − 1 (lag-1 ACF clipped at ±{ROBUST_RHO_CLIP:g}, lag capped at "
+        f"floor({ROBUST_MAX_LAG_FRAC:g} n)); **boot** = stationary block bootstrap of the "
+        f"centred IC series ({ROBUST_BOOT_N} draws, seed {ROBUST_BOOT_SEED}, mean block "
+        "max(h, auto lag + 1, round(n^(1/3))) dates), two-sided. ACF = sample autocorrelation "
+        "of the per-date IC series. The promising rule is the same (q < "
+        f"{PROMISING_Q:.2f} and the block sign share ≥ {PROMISING_SIGN_SHARE:.0%}), only the "
+        "q-value differs.\n")
+    fams = {label: headline(table, label) for label in BH_LABELS}
+    fams = {k: v for k, v in fams.items() if not v.empty}
+    for label, fam in fams.items():
+        ch = robust_changes(fam)
+        out.append(f"- {_FAMILY_NAMES.get(label, label)}: {len(fam)} tests; promising "
+                   f"{int(fam['promising'].sum())} (fixed lag), "
+                   f"{int(fam['promising_auto'].sum())} (auto), "
+                   f"{int(fam['promising_boot'].sum())} (boot); verdict changes "
+                   f"{ch['auto']} under auto, {ch['boot']} under boot; median ACF1 of the IC "
+                   f"series {_f(float(fam['ic_acf1'].median()), '{:+.3f}')}.")
+    out.append("")
+    for label, fam in fams.items():
+        if label != "open" and not any(robust_changes(fam).values()):
+            continue
+        out.append(f"{_FAMILY_NAMES.get(label, label)}: every test promising under any rule, "
+                   "plus TECH_SCORE at every horizon.\n")
+        out.append(_table(robust_rows(fam), _ROBUST_COLS))
+    out.append("**The verdict rule is unchanged**: `promising` (and every section above and "
+               "below) still uses `ic_q` from the fixed lag h − 1. The auto and boot columns are a "
+               "pre-registered robustness check, not a new rule; switching the rule is a separate "
+               "decision.\n")
+    if info is not None and info.robust_s == info.robust_s:
+        out.append(f"Runtime of the robust step: {info.robust_s:.1f} s for "
+                   f"{info.robust_n_tests} tests (both universes, per-date IC series only).\n")
+    return "\n".join(out)
+
+
 def inverted_section(table: pd.DataFrame) -> str:
     """Descriptive held-portfolio view of promising-inverted signals (negated signal)."""
     inv = table[(table["label"] == "open") & (table["subset"] == INVERTED_SUBSET)]
@@ -743,6 +844,8 @@ def render_report(table: pd.DataFrame, splits: list[Split], info: RunInfo,
     for line in verdict_lines(head, horizons):
         w(f"- {line}")
     w("")
+
+    w(robust_section(table, info))
 
     w(f"## Top {TOP_N} signals by |ICIR| (OOS, next-open {_label_name(info)} labels)\n")
     for h in horizons:
@@ -1015,7 +1118,7 @@ def run_evaluation(
         if features.empty:
             raise RuntimeError("no assets with enough daily bars to evaluate")
         t_eval = time.monotonic()
-        table, splits = evaluate(features, labels, horizons)
+        table, splits = evaluate(features, labels, horizons, timings=timings)
         eval_s = time.monotonic() - t_eval
         if table.empty:
             raise RuntimeError("evaluation produced no metrics (too little history?)")
@@ -1032,7 +1135,7 @@ def run_evaluation(
                                        label_info=label_info)
                 fa, la = pd.concat([fa, fm]).sort_index(), pd.concat([la, lm]).sort_index()
             t_eval = time.monotonic()
-            compare, _ = evaluate(fa, la, horizons, splits=splits)
+            compare, _ = evaluate(fa, la, horizons, splits=splits, timings=timings)
             eval_s += time.monotonic() - t_eval
             extra = _coverage_info(session, index_code, start, end, features,
                                    oos_dates(splits), active, COMPLETE_FROM)
@@ -1048,7 +1151,10 @@ def run_evaluation(
                  n_signal_columns=len(sig_cols),
                  n_variant_columns=sum(c in VARIANT_COLUMNS for c in sig_cols),
                  **label_summary(label_info, set(features.index.get_level_values("ticker"))),
-                 scorer_version=SCORER_VERSION, git_commit=git_commit())
+                 scorer_version=SCORER_VERSION, git_commit=git_commit(),
+                 robust_s=timings.get(ROBUST_TIMING_KEY, math.nan),
+                 robust_n_tests=sum(int(t["ic_lag_auto"].notna().sum())
+                                    for t in (table, compare) if t is not None))
     info = RunInfo(n_assets=features.index.get_level_values("ticker").nunique(),
                    first_date=dates.min(), last_date=dates.max(), horizons=horizons,
                    start=start, elapsed_s=time.monotonic() - t0, universe=universe,

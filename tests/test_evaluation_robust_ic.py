@@ -291,3 +291,39 @@ def test_inverted_rows_get_no_robust_values():
     assert inv.any()
     assert t.loc[inv, list(ROBUST_KEYS) + ["ic_q_auto", "ic_q_boot"]].isna().all().all()
     assert not t.loc[inv, "promising_auto"].any() and not t.loc[inv, "promising_boot"].any()
+
+
+# ──────────────────────────────────────────────────────────
+# Report section
+# ──────────────────────────────────────────────────────────
+
+def test_robust_section_and_its_place_in_the_report(tables):
+    from datetime import date
+
+    from investbot.evaluation.report import RunInfo, render_report, robust_rows, robust_section
+    from investbot.evaluation.walkforward import walk_forward_splits
+    t, base, _ = tables
+    info = RunInfo(15, pd.Timestamp("2020-01-01"), pd.Timestamp("2022-09-01"), HORIZONS, None,
+                   robust_s=1.25, robust_n_tests=8)
+    text = robust_section(t, info)
+    assert text.startswith("## IC inference robustness (pre-registered)")
+    assert "**The verdict rule is unchanged**" in text
+    assert "Runtime of the robust step: 1.2 s for 8 tests" in text
+    head = t[(t["label"] == "open") & (t["subset"] == "oos")]
+    assert f"Headline family (next-open, primary return): {len(head)} tests" in text
+    rows = robust_rows(head)
+    assert set(rows.loc[rows["signal"] == "TECH_SCORE", "horizon"]) == set(HORIZONS)
+    assert all(f"| TECH_SCORE | {h} |" in text for h in HORIZONS)
+    # the price table is printed only if that family's verdicts change
+    price = t[(t["label"] == "price") & (t["subset"] == "oos")]
+    changed = bool((price["promising"] != price["promising_auto"]).any()
+                   or (price["promising"] != price["promising_boot"]).any())
+    assert ("Price-only comparison family: every test" in text) == changed
+    assert "did not run" in robust_section(base, info)
+    f, _ = synthetic_panel()
+    from investbot.evaluation.evaluate import evaluation_calendar
+    splits = walk_forward_splits(evaluation_calendar(f), embargo=max(HORIZONS))
+    md = render_report(t, splits, info, date(2026, 10, 20))
+    v, r, top = (md.index("## Verdict"), md.index("## IC inference robustness"),
+                 md.index("## Top "))
+    assert v < r < top
