@@ -11,6 +11,7 @@ import yfinance as yf
 from sqlalchemy.orm import Session
 
 from investbot.data.models import Asset, Financial, FinancialDataAvailability
+from investbot.scoring.fundamental.point_in_time import available_from
 
 logger = logging.getLogger(__name__)
 
@@ -198,21 +199,30 @@ def ingest_financials_for_asset(session: Session, asset: Asset, period_type: str
 
     rows_added = 0
     for col_date in sorted(all_dates):
-        fiscal_year = col_date.year
+        # Statement columns are period-end dates, not publication dates.
+        period_end = pd.Timestamp(col_date).date()
+        fiscal_year = period_end.year
 
-        # Skip if we already have this period
+        # Skip if we already have this period (keyed on period_end: several quarters share a year)
         existing = session.query(Financial).filter_by(
-            asset_id=asset.id, fiscal_year=fiscal_year, period_type=period_type
+            asset_id=asset.id, period_end=period_end, period_type=period_type
         ).first()
         if existing:
             continue
+
+        # yfinance gives no publication date: filing_date stays NULL and availability
+        # falls back to the SEBI LODR lag.
+        avail, avail_source = available_from(period_end, period_type)
 
         # Build the row from all three statements
         data = {
             "asset_id": asset.id,
             "fiscal_year": fiscal_year,
             "period_type": period_type,
-            "filing_date": col_date.date() if hasattr(col_date, "date") else None,
+            "period_end": period_end,
+            "filing_date": None,
+            "available_from": avail,
+            "available_from_source": avail_source,
         }
 
         has_income = income_stmt is not None and col_date in income_stmt.columns
@@ -234,7 +244,7 @@ def ingest_financials_for_asset(session: Session, asset: Asset, period_type: str
             session.add(Financial(**data))
             rows_added += 1
         except Exception as e:
-            logger.warning(f"Failed to insert financials for {ticker} FY{fiscal_year}: {e}")
+            logger.warning(f"Failed to insert financials for {ticker} {period_end}: {e}")
             continue
 
         _update_availability(session, asset.id, fiscal_year, period_type, has_income, has_bs, has_cf)
