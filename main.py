@@ -10,9 +10,10 @@ Usage:
     python main.py ingest --members [INDEX] [--full]
                               # Daily prices + corporate actions only, for past members of INDEX
                               # (default NIFTY50): inactive assets in index_membership. No intraday,
-                              # no financials, is_active is never changed
+                              # no financials, is_active is never changed. Exits 1, no download,
+                              # when index_membership is empty or differs from the change list
     python main.py run        # Start scheduler (background jobs)
-    python main.py status     # Show database statistics
+    python main.py status     # Show database statistics (and whether index_membership is in sync)
     python main.py gaps       # Detect price data gaps
     python main.py dq         # Audit stored price rows (exit 1 if any are bad)
     python main.py dq --purge # ...and delete the bad rows (next ingest re-fetches them)
@@ -22,10 +23,12 @@ Usage:
                               # Compare NIFTY50_TICKERS with NSE's ind_nifty50list.csv (read-only);
                               # exit 0 match, 1 mismatch, 2 fetch/parse error
     python main.py evaluate [--horizons 1,5,20] [--start YYYY-MM-DD] [--end YYYY-MM-DD]
-                            [--universe index|active]
+                            [--universe index|active] [--allow-stale-membership]
                               # index (default when index_membership has NIFTY50 rows): point-in-time
                               # members, plus the active universe on the same splits for comparison
                               # Walk-forward forward-return evaluation → docs/reports/eval_<date>.md
+                              # Exits 1 when index_membership rows differ from the change list
+                              # (see `status`); --allow-stale-membership warns and continues
 """
 import sys
 import logging
@@ -35,6 +38,7 @@ from datetime import datetime
 from investbot.config.settings import LOG_LEVEL
 from investbot.data.db import init_db, SessionLocal
 from investbot.data.index_membership import membership_summary
+from investbot.data.membership_check import check_membership_sync, format_sync
 from investbot.data.seed import run_seed
 from investbot.data.models import (
     AssetClass, Exchange, Asset, PriceDaily, PriceIntraday,
@@ -95,6 +99,11 @@ def cmd_ingest(argv: list[str] | None = None):
         start = datetime.now()
 
         if members:
+            sync = check_membership_sync(session, args.members)
+            if not sync.in_sync:
+                print("\n".join(format_sync(sync)))
+                print("Not downloading: past members come from index_membership, which is stale.")
+                sys.exit(1)
             assets = member_assets(session, args.members)
             logger.info(f"{len(assets)} inactive {args.members} member(s) to ingest "
                         f"(daily prices and corporate actions only)")
@@ -201,6 +210,10 @@ def cmd_status():
         print(f"  Data availability:   {n_availability}")
         ms = membership_summary(session)
         print(f"  Index membership:    {ms['rows']} rows, {ms['members_without_prices']} members without prices")
+        sync = check_membership_sync(session)
+        print(f"  in sync with nifty50_changes.csv: {'yes' if sync.in_sync else 'no'}")
+        if not sync.in_sync:
+            print("\n".join(format_sync(sync)))
         print("=" * 50 + "\n")
 
         # Show per-asset breakdown for first 5
@@ -365,9 +378,13 @@ def cmd_evaluate():
     index_code = "NIFTY50"
     args = sys.argv[2:]
     opts = {"--horizons": "1,5,20", "--start": None, "--end": None, "--universe": None}
+    allow_stale = False
     i = 0
     while i < len(args):
-        if args[i] in opts and i + 1 < len(args):
+        if args[i] == "--allow-stale-membership":
+            allow_stale = True
+            i += 1
+        elif args[i] in opts and i + 1 < len(args):
             opts[args[i]] = args[i + 1]
             i += 2
         else:
@@ -385,6 +402,17 @@ def cmd_evaluate():
     session = SessionLocal()
     try:
         has_members = has_index_membership(session, index_code)
+        if has_members:
+            sync = check_membership_sync(session, index_code)
+            if not sync.in_sync:
+                lines = format_sync(sync)
+                if not allow_stale:
+                    print("\n".join(lines))
+                    print("Refusing to evaluate on stale membership "
+                          "(--allow-stale-membership to continue anyway).")
+                    sys.exit(1)
+                print("\n  WARNING: " + "\n".join(lines) + "\n  Continuing on stale membership "
+                      "(--allow-stale-membership).\n")
         if universe is None:
             universe = "index" if has_members else "active"
             if not has_members:

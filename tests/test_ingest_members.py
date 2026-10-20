@@ -279,6 +279,11 @@ def main_mod(session, monkeypatch):
     import main
     monkeypatch.setattr(main, "SessionLocal", lambda: session)
     monkeypatch.setattr(session, "close", lambda: None)
+    # These tests seed a few ad-hoc stints; the stale-membership preflight has its own tests
+    # (test_membership_check.py).
+    from investbot.data.membership_check import MembershipSync
+    monkeypatch.setattr(main, "check_membership_sync", lambda s, code="NIFTY50": MembershipSync(
+        code, True, 0, 0, (), (), (), ()))
     return main
 
 
