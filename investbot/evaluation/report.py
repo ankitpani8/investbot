@@ -56,6 +56,7 @@ from investbot.evaluation.evaluate import (
 )
 from investbot.evaluation.labels import HORIZONS
 from investbot.evaluation.metrics import (
+    HELD_SPLIT_KEYS,
     MIN_NAMES,
     POOLED_MIN_NAMES,
     REFERENCE_TRADE_VALUE,
@@ -813,6 +814,30 @@ _SURVIVORSHIP_COLS = [
 ]
 
 
+def held_split_rows(head: pd.DataFrame) -> pd.DataFrame:
+    """``survivorship_rows`` followed by every other headline row whose full-window held CAGR
+    net is above the universe's (de-duplicated, in that order)."""
+    base = survivorship_rows(head)
+    beats = head[head["held_cagr_net"] > head["held_cagr_universe"]]
+    beats = beats[~beats.index.isin(base.index)].sort_values(["signal", "horizon"])
+    return pd.concat([base, beats])
+
+
+_HELD_SPLIT_COLS = [
+    ("signal", "signal", _s), ("h", "horizon", _int),
+    ("periods before", "n_periods_pre_complete", _int),
+    ("CAGR net before", "cagr_net_pre_complete", _pct),
+    ("universe before", "cagr_universe_pre_complete", _pct),
+    ("excess before", "excess_cagr_pre_complete", _pct),
+    ("IR before", "info_ratio_net_pre_complete", lambda x: _f(x, "{:+.2f}")),
+    ("periods from", "n_periods_post_complete", _int),
+    ("CAGR net from", "cagr_net_post_complete", _pct),
+    ("universe from", "cagr_universe_post_complete", _pct),
+    ("excess from", "excess_cagr_post_complete", _pct),
+    ("IR from", "info_ratio_net_post_complete", lambda x: _f(x, "{:+.2f}")),
+]
+
+
 def survivorship_section(table: pd.DataFrame, info: RunInfo) -> str:
     """"Survivorship split (descriptive)": mean IC before / from ``COMPLETE_FROM``."""
     cut = info.complete_from or COMPLETE_FROM
@@ -827,6 +852,17 @@ def survivorship_section(table: pd.DataFrame, info: RunInfo) -> str:
         f"Dates before {cut} use today's constituent list (survivorship bias), so a mean IC "
         "there can be inflated; no test is run and no verdict uses these columns.\n")
     out.append(_table(survivorship_rows(head), _SURVIVORSHIP_COLS))
+    if all(k in head.columns for k in HELD_SPLIT_KEYS):
+        out.append(f"### Held portfolio before / from {cut} (descriptive)\n")
+        out.append(
+            "The same rows plus every headline row whose held CAGR net over the whole OOS window "
+            "is above the equal-weight universe's. Net CAGR, universe CAGR, their difference and "
+            "the net information ratio vs the universe, on the held-portfolio periods with a "
+            f"rebalance date before {cut} (\"before\") and on or after it (\"from\"); periods "
+            "are assigned by rebalance date, so one that straddles the cut counts as \"before\". "
+            "The \"before\" universe is survivorship-inflated; no test is run and no verdict "
+            "uses these columns.\n")
+        out.append(_table(held_split_rows(head), _HELD_SPLIT_COLS))
     return "\n".join(out)
 
 
@@ -1256,9 +1292,9 @@ def run_evaluation(
     out = table.assign(universe=universe)
     if compare is not None:
         out = pd.concat([out, compare.assign(universe="active")], ignore_index=True)
-    # the robust (task 340) and survivorship (task 420) columns go last, so every earlier column
-    # keeps its position in the CSV
-    tail = [*ROBUST_COLUMNS, *SURVIVORSHIP_KEYS]
+    # the robust (task 340), survivorship (task 420) and held-split (task 470) columns go last,
+    # so every earlier column keeps its position in the CSV
+    tail = [*ROBUST_COLUMNS, *SURVIVORSHIP_KEYS, *HELD_SPLIT_KEYS]
     out = out[[c for c in out.columns if c not in tail] + [c for c in tail if c in out.columns]]
     out.to_csv(csv, index=False)
     report.write_text(render_report(table, splits, info, report_date, compare), encoding="utf-8")

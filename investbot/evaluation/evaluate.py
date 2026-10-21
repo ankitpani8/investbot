@@ -53,6 +53,12 @@ Survivorship split (task 420, descriptive; no test): on the headline rows (label
 ``index_membership.COMPLETE_FROM``). They come after the robust columns; every other row has NaN
 there, and so does every row when ``complete_from=None``. No existing column or verdict changes.
 
+Held-portfolio split (task 470, descriptive; no test): on the same headline rows,
+``metrics.held_complete_split`` of the periods of the headline held portfolio (same members,
+``FWD_TR_OO_RET_h`` labels and cost) adds ``HELD_SPLIT_KEYS`` (periods, net / universe / excess
+CAGR and net information ratio for rebalance dates before / from ``complete_from``) after
+``SURVIVORSHIP_KEYS``. NaN on every other row and when ``complete_from=None``.
+
 Every row with quintile metrics also has the open-to-open held portfolio
 (``held_*``, from ``FWD_TR_OO_RET_h``, or ``FWD_OO_RET_h`` on the "price" rows
 and when the primary return is "price") next to the open→close ``lo_*`` check.
@@ -86,16 +92,21 @@ from investbot.config.scoring_weights import REGIME_NAMES
 from investbot.data.index_membership import COMPLETE_FROM
 from investbot.evaluation.labels import HORIZONS
 from investbot.evaluation.metrics import (
+    HELD_SPLIT_KEYS,
     MIN_NAMES,
     ROBUST_KEYS,
     ROUND_TRIP_COST,
-    daily_ic,
     SURVIVORSHIP_KEYS,
+    daily_ic,
+    held_complete_split,
+    held_periods,
     ic_complete_split,
     ic_robust,
     ic_summary,
     pooled_ic,
+    quantile_buckets,
     signal_metrics,
+    top_membership,
 )
 from investbot.evaluation.panel import UNIVERSE_COLUMN, signal_columns
 from investbot.evaluation.stats import bh_adjust
@@ -238,6 +249,8 @@ def evaluate(
     robust_s = 0.0
     #: row position -> ``ic_complete_split`` of a headline row
     split_rows: dict[int, dict[str, float]] = {}
+    #: row position -> ``held_complete_split`` of a headline row
+    held_split_rows: dict[int, dict[str, float]] = {}
 
     def add_robust(ic_oos: pd.Series, h: int) -> None:
         nonlocal robust_s
@@ -267,6 +280,9 @@ def evaluate(
             add_robust(ic.loc[oos], h)     # per-date, so equal to the OOS row's own IC series
             if complete_from is not None:
                 split_rows[len(rows) - 1] = ic_complete_split(ic.loc[oos], complete_from)
+                members = top_membership(quantile_buckets(S.loc[oos], Y.loc[oos], min_names))
+                held_split_rows[len(rows) - 1] = held_complete_split(
+                    held_periods(members, Yo.loc[oos], h, cost), h, complete_from)
             add("all", "open", signal_metrics(S, Y, h, min_names, cost, Yo,
                                               boot("open", "all")))
             Yc = ys[("close", h)]
@@ -303,6 +319,7 @@ def evaluate(
         timings[ROBUST_TIMING_KEY] = timings.get(ROBUST_TIMING_KEY, 0.0) + robust_s
     table = _add_multiple_testing(table, pd.DataFrame.from_dict(robust_rows, orient="index"))
     table = _add_survivorship_split(table, split_rows)
+    table = _add_held_split(table, held_split_rows)
     inverted = promising_inverted(table)
     extra = []
     for sig, h in inverted:
@@ -314,7 +331,7 @@ def evaluate(
                       "ic_q": np.nan, "block_sign_share": np.nan, "promising": False,
                       "direction": NEGATED_DIRECTION,
                       **dict.fromkeys(ROBUST_KEYS, np.nan), **dict(ROBUST_VERDICT_COLUMNS),
-                      **dict.fromkeys(SURVIVORSHIP_KEYS, np.nan)})
+                      **dict.fromkeys((*SURVIVORSHIP_KEYS, *HELD_SPLIT_KEYS), np.nan)})
     if extra:
         table = pd.concat([table, pd.DataFrame(extra)], ignore_index=True)
     return table, splits
@@ -387,6 +404,17 @@ def _add_survivorship_split(table: pd.DataFrame,
     cols = {k: np.full(len(table), np.nan) for k in SURVIVORSHIP_KEYS}
     for pos, vals in split_rows.items():
         for k in SURVIVORSHIP_KEYS:
+            cols[k][pos] = vals[k]
+    return pd.concat([table, pd.DataFrame(cols, index=table.index)], axis=1)
+
+
+def _add_held_split(table: pd.DataFrame,
+                    held_split_rows: dict[int, dict[str, float]]) -> pd.DataFrame:
+    """Append ``HELD_SPLIT_KEYS`` after every existing column: the ``held_complete_split`` of
+    the headline rows in ``held_split_rows`` (keyed by row position), NaN elsewhere."""
+    cols = {k: np.full(len(table), np.nan) for k in HELD_SPLIT_KEYS}
+    for pos, vals in held_split_rows.items():
+        for k in HELD_SPLIT_KEYS:
             cols[k][pos] = vals[k]
     return pd.concat([table, pd.DataFrame(cols, index=table.index)], axis=1)
 

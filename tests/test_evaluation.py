@@ -512,8 +512,9 @@ def split_tables():
 
 def test_split_columns_come_last_and_only_on_headline_rows(split_tables):
     table, plain, _, _, keys = split_tables
-    assert list(table.columns[-4:]) == list(keys)
-    assert list(table.columns[:-4]) == list(plain.columns[:-4])
+    from investbot.evaluation.metrics import HELD_SPLIT_KEYS
+    assert list(table.columns[-14:]) == [*keys, *HELD_SPLIT_KEYS]
+    assert list(table.columns[:-14]) == list(plain.columns[:-14])
     head = table[(table["label"] == "open") & (table["subset"] == "oos")]
     rest = table.drop(head.index)
     assert head[list(keys)].notna().all(axis=None)
@@ -523,7 +524,8 @@ def test_split_columns_come_last_and_only_on_headline_rows(split_tables):
 
 def test_existing_columns_are_bit_identical_with_the_split(split_tables):
     table, plain, _, _, keys = split_tables
-    old = [c for c in table.columns if c not in keys]
+    from investbot.evaluation.metrics import HELD_SPLIT_KEYS
+    old = [c for c in table.columns if c not in (*keys, *HELD_SPLIT_KEYS)]
     pd.testing.assert_frame_equal(table[old], plain[old], check_exact=True)
 
 

@@ -386,6 +386,47 @@ def _cagr(r: np.ndarray, years: float) -> float:
     return growth ** (1.0 / years) - 1.0
 
 
+#: Keys of ``held_complete_split``, in this order (appended after ``SURVIVORSHIP_KEYS``, task 470).
+HELD_SPLIT_KEYS: tuple[str, ...] = tuple(
+    f"{stem}_{side}" for side in ("pre_complete", "post_complete")
+    for stem in ("n_periods", "cagr_net", "cagr_universe", "excess_cagr", "info_ratio_net"))
+
+
+def held_complete_split(periods: pd.DataFrame, horizon: int, complete_from) -> dict[str, float]:
+    """
+    Descriptive survivorship split of the held portfolio (task 470): the periods of
+    ``held_periods`` whose **rebalance date** is before ``complete_from`` ("pre") and on or
+    after it ("post"; a rebalance exactly on the cut is "post"). A period that starts just
+    before the cut and ends after it counts as "pre". Per side, with n periods of
+    ``horizon`` bars, years = n * horizon / 252 and ``cagr_net`` / ``cagr_universe`` (via
+    ``_cagr``), ``excess_cagr`` = their difference and ``info_ratio_net`` are computed as in
+    ``held_portfolio``. With fewer than 2 periods on a side the CAGRs, the excess and the IR
+    are NaN (n is 0 or 1). Only partitions periods already computed; no test, no p-value.
+    """
+    cut = pd.Timestamp(complete_from)
+    before = np.asarray(periods.index < cut)
+    out: dict[str, float] = {}
+    for side, sel in (("pre_complete", before), ("post_complete", ~before)):
+        p = periods[sel]
+        n = len(p)
+        vals = dict.fromkeys(("cagr_net", "cagr_universe", "excess_cagr", "info_ratio_net"),
+                             math.nan)
+        if n > 1:
+            years = n * horizon / TRADING_DAYS
+            net = p["net"].to_numpy()
+            univ = p["universe"].to_numpy()
+            active = net - univ
+            sd = float(active.std(ddof=1))
+            vals["cagr_net"] = _cagr(net, years)
+            vals["cagr_universe"] = _cagr(univ, years)
+            vals["excess_cagr"] = vals["cagr_net"] - vals["cagr_universe"]
+            if sd > 0:
+                vals["info_ratio_net"] = float(active.mean() / sd * math.sqrt(TRADING_DAYS / horizon))
+        out[f"n_periods_{side}"] = n
+        out.update({f"{k}_{side}": v for k, v in vals.items()})
+    return {k: out[k] for k in HELD_SPLIT_KEYS}
+
+
 def held_portfolio(members: pd.DataFrame, Y_oo: pd.DataFrame, horizon: int,
                    cost: float = ROUND_TRIP_COST, bootstrap: bool = True) -> dict[str, float]:
     """
