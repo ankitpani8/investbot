@@ -88,6 +88,14 @@ Agents add open questions under **Pending**. Ankit moves them to **Decided** wit
   - **`"<n>D"` is anchored at the first session of the panel**, so its phase depends on the start date. Alternative: anchor on a fixed epoch session.
   - **Equal weight** within the selection (1 / n_selected), not signal- or inverse-vol-weighted; allocation work is frozen (CLAUDE.md priority 4).
 
+- 2026-10-22 **Backtest driver conventions** (task 600-backtest-cli, `investbot/backtest/runner.py`, `main.py backtest`). Chosen (conservative, each behind a parameter):
+  - **Strategy = top-quantile equal weight** (`--quantile`, default 0.2; `--lower-is-better` for the bottom), cash below `min_names` (a `run_backtest` keyword, default `metrics.MIN_NAMES` = 10; not a CLI flag). Alternatives: signal- or inverse-vol-weighted, hold-previous below the minimum (DECISIONS_PENDING "Strategy adapter").
+  - **Benchmark = equal-weight universe rebalanced at the same `--freq`**, not an index level (we hold no NIFTY50 level), so "excess vs benchmark" in the §9.2 table is excess over that portfolio. Alternative: buy-and-hold of the universe at the first rebalance.
+  - **"Pre-tax" = a `tax=False` run of the same schedule** (the report's clean tax drag); the `compare` pre-tax column keeps its documented meaning. `tax_alpha` stays n/a: there is no tax-aware decision logic to pair with a tax-naive run.
+  - **`start` clamp**: if the first execution would precede 2004-10-01, `start` becomes 2004-10-01 and the inputs are reloaded (stderr notice, noted in the report). Alternative: refuse with an error.
+  - **Stale `index_membership` exits 1** like `evaluate`, with no `--allow-stale-membership` override yet (add the flag when a run on a stale table is wanted).
+  - **Members with no bar inside the window are dropped** and listed in the report; members with no price rows at all are only counted (`missing`).
+
 ## Decided
 - 2026-10-17 **Zero-volume flat daily bars** (O=H=L=C, volume 0, e.g. 2025-03-18 and 2026-01-15) are yfinance placeholders and are rejected by `quality.py`. They are not real sessions, and they would inject fake zero-range bars into ATR and the patterns. Backup before purge: `~/investbot_data/investbot.db.pre-dq-purge-20261017`.
 - 2026-10-17 **Stale recent bars**: upsert a trailing window (5 daily sessions, 2 intraday days) and never store today's daily bar before 16:00 IST. This is task 000-ingest-refresh-window.
