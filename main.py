@@ -19,6 +19,9 @@ Usage:
     python main.py dq --purge # ...and delete the bad rows (next ingest re-fetches them)
     python main.py score [TICKER] [--timeframe 1d|15m] [--as-of YYYY-MM-DD] [--no-cache]
                               # Technical scores, ranked (one asset in detail with TICKER)
+    python main.py coverage [--index NIFTY50] [--csv PATH]
+                              # Price coverage of every membership stint and per year (read-only,
+                              # local, no network); --csv writes the per-stint frame. Always exits 0
     python main.py constituents
                               # Compare NIFTY50_TICKERS with NSE's ind_nifty50list.csv (read-only);
                               # exit 0 match, 1 mismatch, 2 fetch/parse error
@@ -37,7 +40,10 @@ from datetime import datetime
 
 from investbot.config.settings import LOG_LEVEL
 from investbot.data.db import init_db, SessionLocal
-from investbot.data.index_membership import membership_summary
+from investbot.data.index_membership import INDEXES, membership_summary
+from investbot.data.membership_coverage import (
+    coverage_by_year, format_coverage, load_bar_dates, load_stints, session_calendar, stint_coverage,
+)
 from investbot.data.membership_check import (
     check_membership_sync, format_sync, require_membership_sync,
 )
@@ -186,6 +192,13 @@ def cmd_run():
         logger.info("Scheduler stopped.")
 
 
+def _coverage_inputs(session, index_code: str = "NIFTY50"):
+    """Stints, stored bar dates and the session calendar for the coverage report (read-only)."""
+    stints = load_stints(session, index_code)
+    bar_dates = load_bar_dates(session)
+    return stints, bar_dates, session_calendar(bar_dates)
+
+
 def cmd_status():
     """Print database statistics."""
     session = SessionLocal()
@@ -216,6 +229,11 @@ def cmd_status():
         print(f"  in sync with nifty50_changes.csv: {'yes' if sync.in_sync else 'no'}")
         if not sync.in_sync:
             print("\n".join(format_sync(sync)))
+        stints, bar_dates, calendar = _coverage_inputs(session)
+        if len(stints):
+            cov = stint_coverage(stints, bar_dates, calendar)
+            print(f"  Stints not fully priced: {int((cov['status'] != 'ok').sum())} of {len(cov)} "
+                  f"(python main.py coverage)")
         print("=" * 50 + "\n")
 
         # Show per-asset breakdown for first 5
@@ -228,6 +246,34 @@ def cmd_status():
                 fin_count = session.query(Financial).filter_by(asset_id=a.id).count()
                 print(f"    {a.ticker:<20s}  daily={daily_count:<6}  intraday={intra_count:<6}  financials={fin_count}")
             print()
+    finally:
+        session.close()
+
+
+def cmd_coverage(argv: list[str] | None = None):
+    """Price coverage per membership stint and per year. Read-only, local, always exits 0."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="main.py coverage",
+                                     description="Price coverage of index membership stints")
+    parser.add_argument("--index", default="NIFTY50", help="index code (default NIFTY50)")
+    parser.add_argument("--csv", default=None, metavar="PATH", help="write the per-stint frame to PATH")
+    args = parser.parse_args(argv or [])
+
+    session = SessionLocal()
+    try:
+        if args.index in INDEXES:
+            sync = check_membership_sync(session, args.index)
+            if not sync.in_sync:
+                print("\nWARNING: index_membership is stale; coverage below is for the stored table.")
+                print("\n".join(format_sync(sync)))
+        stints, bar_dates, calendar = _coverage_inputs(session, args.index)
+        cov = stint_coverage(stints, bar_dates, calendar)
+        years = coverage_by_year(stints, bar_dates, calendar)
+        print("\n" + "\n".join(format_coverage(cov, years)) + "\n")
+        if args.csv:
+            cov.to_csv(args.csv, index=False)
+            print(f"  Per-stint coverage written to {args.csv}\n")
     finally:
         session.close()
 
@@ -475,6 +521,7 @@ COMMANDS = {
     "score": cmd_score,
     "evaluate": cmd_evaluate,
     "constituents": cmd_constituents,
+    "coverage": cmd_coverage,
 }
 
 if __name__ == "__main__":
@@ -484,5 +531,7 @@ if __name__ == "__main__":
 
     if sys.argv[1] == "ingest":
         cmd_ingest(sys.argv[2:])
+    elif sys.argv[1] == "coverage":
+        cmd_coverage(sys.argv[2:])
     else:
         COMMANDS[sys.argv[1]]()
