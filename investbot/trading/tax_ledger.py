@@ -32,10 +32,14 @@ Crypto (``term == "FLAT"``, Section 115BBH): the flat rate applies to the sum of
 *positive* gains only. Losses are ignored: never offset (not even against other crypto
 gains) and never carried forward. TDS is reported, not netted against the tax.
 
+31-Jan-2018 grandfathering (s.55(2)(ac)) is not applied here: the ledger taxes the ``gain``
+it is given. ``lot_tracker.sell_fifo(fmv_2018_01_31=...)`` steps up the cost basis of
+qualifying lots, so a grandfathered gain flows through unchanged.
+
 Not modelled (BACKLOG): sales before 2004-10-01 (they raise ValueError: STCG at slab
-rates and taxable LTCG with indexation), 31-Jan-2018 grandfathering,
-basic-exemption-limit adjustment of resident individuals, the s.87A rebate, slab-rate
-assets, the pre-2018 STT-not-paid case (LTCG taxable under s.112).
+rates and taxable LTCG with indexation), basic-exemption-limit adjustment of resident
+individuals, the s.87A rebate, slab-rate assets, the pre-2018 STT-not-paid case (LTCG
+taxable under s.112).
 """
 
 from __future__ import annotations

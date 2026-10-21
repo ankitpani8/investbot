@@ -13,6 +13,9 @@ Cost conventions
   ``deductible_costs(buy_breakdown)``.
 - deductible sell costs = ``CostBreakdown.total - stt`` (STT is not deductible,
   Section 48), allocated to lots pro rata by quantity sold.
+- grandfathering (opt-in, ``fmv_2018_01_31``): a long-term lot bought before 2018-02-01 and
+  sold on or after 2018-04-01 uses ``grandfathering.grandfathered_cost`` as its cost basis
+  (s.55(2)(ac)). The FMV is per unit, on the same share basis as the lots.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from typing import Literal
 
 import pandas as pd
 
+from investbot.trading import grandfathering
 from investbot.trading.tax_rules import (
     TaxRegimeParams,
     days_to_long_term,
@@ -56,7 +60,8 @@ class Realisation:
     """Gain realised on (part of) one lot.
 
     ``gain = sale_value - cost_basis - sell_costs``; negative is a loss, and the
-    STCL/LTCL split follows from the sign and ``term``.
+    STCL/LTCL split follows from the sign and ``term``. ``cost_basis`` is the grandfathered
+    cost when ``grandfathered`` is True.
     """
 
     lot_id: str
@@ -69,6 +74,7 @@ class Realisation:
     sell_costs: float
     gain: float
     term: Term
+    grandfathered: bool = False  # cost_basis was stepped up to the 31-Jan-2018 FMV
 
 
 def _term(buy_date: date, on: date, regime: TaxRegimeParams) -> Term:
@@ -89,8 +95,13 @@ def sell_fifo(
     regime: TaxRegimeParams,
     *,
     sell_costs: CostBreakdown | None = None,
+    fmv_2018_01_31: float | None = None,
 ) -> tuple[list[Realisation], list[Lot]]:
     """Sell ``quantity`` units oldest-first.
+
+    ``fmv_2018_01_31`` (per unit, same share basis as the lots) switches on the
+    grandfathered cost of acquisition for qualifying lots (see ``grandfathering``); None
+    leaves every cost basis as the actual cost.
 
     Returns (realisations, new lot states). The new list holds every input lot, in input
     order, with updated ``remaining_qty``; inputs are never mutated. Raises ValueError for
@@ -125,6 +136,13 @@ def sell_fifo(
         term = _term(lot.buy_date, sell_date, regime)
         cost_basis = _cost_basis(lot, qty)
         sale_value = qty * sell_price
+        stepped_up = fmv_2018_01_31 is not None and grandfathering.applies(
+            lot.buy_date, sell_date, term
+        )
+        if stepped_up:
+            cost_basis = grandfathering.grandfathered_cost(
+                cost_basis, qty * fmv_2018_01_31, sale_value
+            )
         lot_sell_costs = deductible * qty / quantity
         if term == "FLAT" and not FLAT_TERM_DEDUCTS_SELL_COSTS:
             lot_sell_costs = 0.0
@@ -140,6 +158,7 @@ def sell_fifo(
                 sell_costs=lot_sell_costs,
                 gain=sale_value - cost_basis - lot_sell_costs,
                 term=term,
+                grandfathered=stepped_up,
             )
         )
 
@@ -164,11 +183,18 @@ _UNREALISED_COLUMNS = [
 
 
 def unrealised_by_lot(
-    lots: list[Lot], price: float, as_of: date, regime: TaxRegimeParams
+    lots: list[Lot],
+    price: float,
+    as_of: date,
+    regime: TaxRegimeParams,
+    fmv_2018_01_31: float | None = None,
 ) -> pd.DataFrame:
     """One row per open lot (FIFO order) valued at ``price``.
 
     ``unrealised_gain`` is market value less cost of acquisition, before any sell costs.
+    With ``fmv_2018_01_31`` an extra last column ``grandfathered_cost_basis`` holds the
+    stepped-up cost for a lot that would qualify if sold on ``as_of`` at ``price``, else
+    ``cost_basis``. Without it the columns are exactly the ones above (None = unchanged).
     """
     rows = []
     for lot in sorted(lots, key=lambda x: x.buy_date):
@@ -176,6 +202,12 @@ def unrealised_by_lot(
             continue
         cost_basis = _cost_basis(lot, lot.remaining_qty)
         market_value = lot.remaining_qty * price
+        term = _term(lot.buy_date, as_of, regime)
+        gf_basis = cost_basis
+        if fmv_2018_01_31 is not None and grandfathering.applies(lot.buy_date, as_of, term):
+            gf_basis = grandfathering.grandfathered_cost(
+                cost_basis, lot.remaining_qty * fmv_2018_01_31, market_value
+            )
         rows.append(
             {
                 "lot_id": lot.lot_id,
@@ -183,8 +215,13 @@ def unrealised_by_lot(
                 "cost_basis": cost_basis,
                 "market_value": market_value,
                 "unrealised_gain": market_value - cost_basis,
-                "term_if_sold_now": _term(lot.buy_date, as_of, regime),
+                "term_if_sold_now": term,
                 "days_to_long_term": days_to_long_term(lot.buy_date, as_of, regime),
             }
         )
-    return pd.DataFrame(rows, columns=_UNREALISED_COLUMNS)
+        if fmv_2018_01_31 is not None:
+            rows[-1]["grandfathered_cost_basis"] = gf_basis
+    columns = _UNREALISED_COLUMNS + (
+        ["grandfathered_cost_basis"] if fmv_2018_01_31 is not None else []
+    )
+    return pd.DataFrame(rows, columns=columns)
