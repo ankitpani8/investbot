@@ -349,7 +349,7 @@ def test_no_robust_flag_is_passed_to_run(monkeypatch):
 
     monkeypatch.setattr(runner, "run", fake_run)
     monkeypatch.setattr("investbot.data.db.SessionLocal", _Session)
-    monkeypatch.setattr("investbot.evaluation.loader.has_index_membership", lambda s, c: False)
+    monkeypatch.setattr(runner, "require_membership_sync", lambda *a, **k: None)
     runner.main(["--universe", "active", "--no-robust"])
     assert seen["robust"] is False
     runner.main(["--universe", "active"])

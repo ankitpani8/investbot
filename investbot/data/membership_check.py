@@ -12,7 +12,9 @@ out of sync: that is an ingest question.
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from typing import Callable
 
 import pandas as pd
 from sqlalchemy import exists, select
@@ -122,3 +124,32 @@ def format_sync(s: MembershipSync, max_items: int = 10) -> list[str]:
     if not s.in_sync:
         lines.append(f"  Fix: run `{FIX}` (local seed, no network).")
     return lines
+
+
+def require_membership_sync(session: Session, index_code: str = "NIFTY50", *,
+                            allow_stale: bool = False, out: Callable[[str], None] = print,
+                            what: str = "evaluate") -> MembershipSync | None:
+    """
+    Pre-flight shared by `main.py evaluate` and `scripts.regime_study`. Read-only.
+
+    No `index_membership` rows for `index_code`: returns None, prints nothing (the caller
+    keeps its own "no membership rows" behaviour). In sync: returns the sync, prints nothing.
+    Out of sync: with `allow_stale=False` prints the report and the refusal, then exits 1;
+    with `allow_stale=True` prints a WARNING block and returns the sync.
+    `what` is the verb phrase of the refusal ("evaluate", "run the regime study").
+    """
+    if not session.execute(
+            select(exists().where(IndexMembership.index_code == index_code))).scalar():
+        return None
+    sync = check_membership_sync(session, index_code)
+    if sync.in_sync:
+        return sync
+    lines = format_sync(sync)
+    if not allow_stale:
+        out("\n".join(lines))
+        out(f"Refusing to {what} on stale membership "
+            "(--allow-stale-membership to continue anyway).")
+        sys.exit(1)
+    out("\n  WARNING: " + "\n".join(lines) + "\n  Continuing on stale membership "
+        "(--allow-stale-membership).\n")
+    return sync

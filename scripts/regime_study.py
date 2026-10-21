@@ -2,7 +2,7 @@
 Regime study runner: does the real-time regime label predict the ex-post regime?
 
     python -m scripts.regime_study [--end YYYY-MM-DD] [--universe index|active] [--no-h6]
-                                   [--no-robust]
+                                   [--no-robust] [--allow-stale-membership]
 
 Loads the stocks one at a time (``loader.load_daily_history``), computes the
 regime conditioning and the ex-post targets on the real bars and on the
@@ -40,6 +40,12 @@ tables (and, last, to their CSVs); the report gains the section "Robust inferenc
 (pre-registered)" after H6, with the pre-registered size check (``rs.size_check``,
 run once per report). Every other table and column is unchanged.
 
+Stale-membership pre-flight (task 480, as ``main.py evaluate``): whenever ``index_membership``
+has NIFTY50 rows, ``investbot.data.membership_check.require_membership_sync`` compares them
+with the change list before any price is loaded and exits 1 when they differ (fix:
+``python main.py setup``). ``--allow-stale-membership`` prints a WARNING and continues. It
+applies to both ``--universe`` values; an empty table keeps the "no membership rows" handling.
+
 An existing report is never overwritten (``_b``, ``_c``, ... suffixes).
 No DB writes, no network.
 """
@@ -61,6 +67,7 @@ import pandas as pd
 
 from investbot.config.scoring_weights import REGIME_NAMES
 from investbot.data.index_membership import COMPLETE_FROM
+from investbot.data.membership_check import require_membership_sync
 from investbot.evaluation import regime_study as rs
 from investbot.evaluation.evaluate import PROMISING_Q, PROMISING_SIGN_SHARE
 from investbot.evaluation.labels import HORIZONS as HARNESS_HORIZONS
@@ -1205,16 +1212,20 @@ def main(argv=None) -> None:
                     help="skip the pre-registered H6 family (the extra shuffled-null seeds)")
     ap.add_argument("--no-robust", action="store_true",
                     help="skip the pre-registered robust inference (auto lag, block bootstrap)")
+    ap.add_argument("--allow-stale-membership", action="store_true",
+                    help="warn instead of exiting 1 when index_membership differs from the "
+                         "change list (run `python main.py setup` to fix it)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
     logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
 
     from investbot.data.db import SessionLocal
-    from investbot.evaluation.loader import has_index_membership
 
     session = SessionLocal()
     try:
-        has_members = has_index_membership(session, INDEX_CODE)
+        has_members = require_membership_sync(
+            session, INDEX_CODE, allow_stale=args.allow_stale_membership,
+            what="run the regime study") is not None
         universe = args.universe
         if universe is None:
             universe = "index" if has_members else "active"

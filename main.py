@@ -38,7 +38,9 @@ from datetime import datetime
 from investbot.config.settings import LOG_LEVEL
 from investbot.data.db import init_db, SessionLocal
 from investbot.data.index_membership import membership_summary
-from investbot.data.membership_check import check_membership_sync, format_sync
+from investbot.data.membership_check import (
+    check_membership_sync, format_sync, require_membership_sync,
+)
 from investbot.data.seed import run_seed
 from investbot.data.models import (
     AssetClass, Exchange, Asset, PriceDaily, PriceIntraday,
@@ -371,7 +373,6 @@ def cmd_score():
 
 def cmd_evaluate():
     """Walk-forward forward-return evaluation of every technical signal and the baselines."""
-    from investbot.evaluation.loader import has_index_membership
     from investbot.evaluation.evaluate import headline
     from investbot.evaluation.report import dividend_warning, run_evaluation, universe_note
 
@@ -401,18 +402,8 @@ def cmd_evaluate():
     logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
     session = SessionLocal()
     try:
-        has_members = has_index_membership(session, index_code)
-        if has_members:
-            sync = check_membership_sync(session, index_code)
-            if not sync.in_sync:
-                lines = format_sync(sync)
-                if not allow_stale:
-                    print("\n".join(lines))
-                    print("Refusing to evaluate on stale membership "
-                          "(--allow-stale-membership to continue anyway).")
-                    sys.exit(1)
-                print("\n  WARNING: " + "\n".join(lines) + "\n  Continuing on stale membership "
-                      "(--allow-stale-membership).\n")
+        has_members = require_membership_sync(
+            session, index_code, allow_stale=allow_stale, what="evaluate") is not None
         if universe is None:
             universe = "index" if has_members else "active"
             if not has_members:
