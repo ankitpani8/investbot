@@ -259,6 +259,16 @@ Status: `[ ]` open · `[~]` in progress (put the agent branch name next to it) �
 - [ ] Risk follow-up: `estimate_covariance` uses the close-to-close returns of whatever frame it is given. When the eval/backtest layer calls it, do not rely on `adj_close` for split days (its factors go stale). Run `detect_unadjusted_splits` / `python main.py dq` first, so a split day is not a fake -50% return; `log_returns` does not detect corporate actions. Dividends come from `dividends_on_bars` (task 200).
 - [ ] Risk follow-up: assets excluded for short history (new listings like TMPV.NS) get no risk-parity weight; decide in the allocator (task 140) how they enter the blend.
 
+## Backtest (master plan Phase 7)
+- [x] Task 550: pure after-tax portfolio simulator `investbot/backtest/simulator.py` (`simulate`, `SimulationResult`, `daily_returns`): target-weight schedule of any horizon -> next-open trades on stored `open`, FIFO lots (`sell_fifo`, grandfathering via `fmv_2018_01_31`), dated `estimate_costs` per leg, dividends in cash, FY tax paid on the first April session (pro-rata sale if cash is short), daily `nav` / `nav_after_tax` / `tax_accrued`, terminal `liquidation_tax`, `stale_marks`. `tests/test_backtest_simulator.py` (hand-checked fixture, FY boundary, carry-forward, LTCG exemption, grandfathering, tax-naive run, truncation invariance) (`agent/550-backtest-after-tax-simulator`). Speed: 100 assets x 5,500 sessions, weekly schedule ~8 s, daily ~40 s.
+- [ ] Backtest follow-up: DB loader + CLI driver (`python main.py backtest ...`): wide `open`/`close` frames from `price_daily`, `dividends_on_bars` for the dividend frame, `fmv_31_jan_2018` per asset, membership-aware universes, a strategy-to-weights adapter (e.g. BASE_MOM_12_1 monthly) and an equal-weight benchmark run through the same simulator.
+- [ ] Backtest follow-up: wire `performance.py` KPIs onto `daily_returns(result)` (`periods_per_year=252`, daily VaR/CVaR, `monthly_returns`, `drawdown_stats`; `trade_stats` on `result.realisations` gains) and report pre-tax vs after-tax vs tax-naive (`tax=False`) for the plan's tax alpha; then apply the §9.2 thresholds.
+- [ ] Backtest follow-up: the simulator charges `regime_for("equity", d)` costs, but stamp duty, exchange charge, SEBI fee and GST/service tax before 2024-07-23 are copies of today's rates (see "Transaction-cost regime dating" under Phase 5d). Verify them before quoting pre-2024 after-cost numbers.
+- [ ] Backtest follow-up: lots and the 31-Jan-2018 FMV must be on one share basis; stored prices are on today's basis, so a bar fetched before a split (`detect_unadjusted_splits`) breaks the quantity continuity of a held position. Run `python main.py dq` before a backtest and mask or fix flagged bars (the simulator does no corporate-action adjustment).
+- [ ] Backtest follow-up: no slippage model (fills at the stored open) and no DP charge; the harness adds 2.5 bp per side. Decide whether the simulator should add a per-side slippage parameter.
+- [ ] Backtest follow-up: dividend income tax (slab rate from 2020-04-01, DDT before) is not modelled; dividends are credited gross.
+- [ ] Backtest follow-up: forced exit for held assets whose prices stop (delisting / merger), see DECISIONS_PENDING "Backtest simulator: stale marks".
+
 ## Later phases
 See `CLAUDE.md` → Build order and the master plan.
 
