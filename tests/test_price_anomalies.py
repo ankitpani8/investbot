@@ -318,7 +318,8 @@ def test_dq_exit_code_and_existing_lines_unchanged_when_only_anomalies_exist(
     assert "Price anomalies (report-only)" in out and "spike_reversal 1 (1 tickers)" in out
     assert out.index("Split check OK") < out.index("Price anomalies (report-only)")
     rows = pd.read_csv(csv)
-    assert list(rows.columns) == ["ticker", "kind", "start", "end", "sessions", "value"]
+    assert list(rows.columns) == ["ticker", "kind", "start", "end", "sessions", "value",
+                                  "market_share", "market_wide"]
     assert rows["kind"].tolist() == ["spike_reversal"]
     with Session() as s:
         assert s.query(PriceDaily).count() == 30         # nothing purged
@@ -337,3 +338,217 @@ def test_dq_purge_does_not_touch_anomalies_and_clean_data_prints_none(main_mod, 
     monkeypatch.setattr(sys, "argv", ["main.py", "dq"])
     main_mod.cmd_dq()
     assert "none found" in capsys.readouterr().out
+
+
+# ──────────────────────────────────────────────────────────
+# Market-wide tag
+# ──────────────────────────────────────────────────────────
+
+def _flat(n=30, level=100.0) -> list[float]:
+    """Quiet path with no hard mover (+-0.5% alternating)."""
+    return _walk(n, level)
+
+
+def _crash(closes, at, log_ret):
+    c = list(closes)
+    for i in range(at, len(c)):
+        c[i] = c[i] * float(np.exp(log_ret))
+    return c
+
+
+def _counts(frames) -> pd.DataFrame:
+    total = frames[0]
+    for f in frames[1:]:
+        total = total.add(f, fill_value=0).astype(int)
+    return total
+
+
+def test_daily_move_counts_columns_and_validity():
+    c = _flat(10)
+    c[3] = c[2] * np.exp(0.12)
+    c[6] = c[5] * np.exp(-0.10)
+    c[8] = np.nan
+    c[1] = 0.0
+    bars = _bars(c)
+    out = pa.daily_move_counts(bars)
+    assert list(out.columns) == ["priced", "up", "down"]
+    assert out.index.equals(pd.DatetimeIndex(bars.index).normalize())
+    assert len(out) == len(bars)
+    assert out["priced"].tolist() == [0, 0, 0, 1, 1, 1, 1, 1, 0, 0]
+    # the one-bar jumps revert on the next bar, which is a hard move the other way
+    assert out["up"].tolist() == [0, 0, 0, 1, 0, 0, 0, 1, 0, 0]
+    assert out["down"].tolist() == [0, 0, 0, 0, 1, 0, 1, 0, 0, 0]
+    assert all(dt.kind == "i" for dt in out.dtypes)
+
+
+def test_daily_move_counts_empty_and_single_bar():
+    assert len(pa.daily_move_counts(_bars([]))) == 0
+    assert pa.daily_move_counts(_bars([100.0]))["priced"].tolist() == [0]
+
+
+def _universe(n_tickers, at, own_drop, others_drop):
+    """n tickers; ticker 0 falls by own_drop at bar `at`, the others by others_drop (None = flat)."""
+    frames, found = [], []
+    own = {}
+    for k in range(n_tickers):
+        drop = own_drop if k == 0 else others_drop
+        c = _flat(30) if drop is None else _crash(_flat(30), at, drop)
+        bars = _bars(c)
+        f = pa.daily_move_counts(bars)
+        frames.append(f)
+        if k == 0:
+            found = detect_price_anomalies(bars, _actions(), ticker="T0")
+            own = {("T0", a.start): tuple(int(v) for v in f.loc[pd.Timestamp(a.start)]) for a in found}
+    return found, _counts(frames), own
+
+
+def test_market_wide_crash_is_tagged_with_full_share():
+    found, counts, own = _universe(10, 12, np.log(0.55), np.log(0.85))
+    assert [a.kind for a in found] == ["extreme_move"]
+    tagged = pa.tag_market_wide(found, counts, own)
+    assert tagged[0].market_wide is True and tagged[0].market_share == pytest.approx(9 / 9)
+    assert found[0].market_wide is False and np.isnan(found[0].market_share)    # input untouched
+    assert tagged[0] is not found[0]
+
+
+def test_lone_move_is_not_market_wide():
+    found, counts, own = _universe(10, 12, np.log(0.55), None)
+    tagged = pa.tag_market_wide(found, counts, own)
+    assert tagged[0].market_wide is False and tagged[0].market_share == 0.0
+
+
+def test_self_is_excluded_from_the_share():
+    found, counts, own = _universe(5, 12, np.log(0.55), None)
+    assert int(counts.loc[pd.Timestamp(found[0].start), "down"]) == 1
+    for om in (own, None):                       # derived self row gives the same answer
+        tagged = pa.tag_market_wide(found, counts, om)
+        assert tagged[0].market_share == 0.0 and tagged[0].market_wide is False
+
+
+def test_opposite_direction_movers_do_not_count():
+    found, counts, own = _universe(10, 12, np.log(0.55), np.log(1.15))
+    tagged = pa.tag_market_wide(found, counts, own)
+    assert tagged[0].market_share == 0.0 and tagged[0].market_wide is False
+
+
+def test_too_few_other_tickers_is_never_market_wide():
+    found, counts, own = _universe(5, 12, np.log(0.55), np.log(0.85))      # 4 others, share 1.0
+    tagged = pa.tag_market_wide(found, counts, own)
+    assert tagged[0].market_share == pytest.approx(1.0) and tagged[0].market_wide is False
+    found, counts, own = _universe(6, 12, np.log(0.55), np.log(0.85))      # 5 others
+    assert pa.tag_market_wide(found, counts, own)[0].market_wide is True
+
+
+def test_share_below_threshold_is_not_market_wide():
+    frames, own = [], {}
+    found = []
+    for k in range(11):                          # 10 others, 1 of them moves = 10% < 20%
+        c = _flat(30)
+        if k in (0, 1):
+            c = _crash(c, 12, np.log(0.55) if k == 0 else np.log(0.85))
+        bars = _bars(c)
+        f = pa.daily_move_counts(bars)
+        frames.append(f)
+        if k == 0:
+            found = detect_price_anomalies(bars, _actions(), ticker="T0")
+            own = {("T0", found[0].start): tuple(int(v) for v in f.loc[pd.Timestamp(found[0].start)])}
+    tagged = pa.tag_market_wide(found, _counts(frames), own)
+    assert tagged[0].market_share == pytest.approx(0.1) and tagged[0].market_wide is False
+
+
+def test_stale_run_keeps_nan_and_false():
+    c = _flat(20)
+    c[5:12] = [c[5]] * 7
+    bars = _bars(c)
+    found = detect_price_anomalies(bars, _actions(), ticker="T0")
+    assert [a.kind for a in found] == ["stale_run"]
+    counts = _counts([pa.daily_move_counts(bars)] * 8)
+    tagged = pa.tag_market_wide(found, counts)
+    assert np.isnan(tagged[0].market_share) and tagged[0].market_wide is False
+
+
+def test_tagging_with_no_other_priced_ticker_or_missing_date_does_not_raise():
+    a = PriceAnomaly("T0", "extreme_move", DAYS[3].date(), DAYS[3].date(), 1, -0.6)
+    only_self = pa.daily_move_counts(_bars(_crash(_flat(10), 3, -0.6)))
+    t = pa.tag_market_wide([a], only_self)[0]
+    assert np.isnan(t.market_share) and t.market_wide is False
+    empty = pd.DataFrame({"priced": [], "up": [], "down": []}, dtype=int)
+    t = pa.tag_market_wide([a], empty)[0]
+    assert np.isnan(t.market_share) and t.market_wide is False
+    assert pa.tag_market_wide([], empty) == []
+
+
+def test_spike_reversal_is_tagged_too():
+    found, counts, own = _universe(8, 12, np.log(0.55), np.log(0.85))
+    spike = _flat(30)
+    spike[12] = spike[11] * np.exp(-0.5)
+    f = pa.daily_move_counts(_bars(spike))
+    a = detect_price_anomalies(_bars(spike), _actions(), ticker="S")
+    assert [x.kind for x in a] == ["spike_reversal"]
+    # the spike ticker is the 9th in the cross-section; the 8 others all fell 15% that day
+    tagged = pa.tag_market_wide(a, _counts([counts, f]), {("S", a[0].start): (1, 0, 1)})
+    assert tagged[0].market_share == pytest.approx(1.0) and tagged[0].market_wide is True
+
+
+def test_market_tag_is_same_day_cross_section_only():
+    """Truncation: counts built from bars up to day t (plus self) tag a day-t extreme_move the same."""
+    found, counts, own = _universe(8, 12, np.log(0.55), np.log(0.85))
+    full = pa.tag_market_wide(found, counts, own)[0]
+    cut = counts.loc[: pd.Timestamp(found[0].start)]
+    assert pa.tag_market_wide(found, cut, own)[0].market_share == full.market_share
+
+
+def _crash_day_db(s, n_tickers=4, lone_extra=False):
+    for k in range(n_tickers):
+        c = _crash(_walk(), 10, np.log(0.85))
+        if k == 0:
+            c = _crash(_walk(), 10, np.log(0.55))
+        _add_asset(s, f"T{k}.NS", c)
+    if lone_extra:
+        c = _walk()
+        c[20:] = [x * np.exp(0.6) for x in c[20:]]
+        _add_asset(s, "LONE.NS", c)
+
+
+def test_audit_tags_across_assets(Session):
+    with Session() as s:
+        _crash_day_db(s, n_tickers=7, lone_extra=True)       # 8 assets
+        found = audit_price_anomalies(s)
+        by = {(a.ticker, a.start): a for a in found}
+        crash = by[("T0.NS", DAYS[10].date())]
+        assert crash.kind == "extreme_move"
+        assert crash.market_share == pytest.approx(6 / 7) and crash.market_wide is True
+        lone = by[("LONE.NS", DAYS[20].date())]
+        assert lone.market_share == 0.0 and lone.market_wide is False
+        # tickers= narrows the cross-section to the loaded assets
+        few = audit_price_anomalies(s, tickers=["T0.NS", "T1.NS"])
+        assert few[0].market_share == pytest.approx(1.0) and few[0].market_wide is False
+        assert audit_price_anomalies(s, tickers=[]) == []
+
+
+def test_dq_prints_market_summary_marker_and_csv_columns(main_mod, Session, monkeypatch, capsys, tmp_path):
+    with Session() as s:
+        _crash_day_db(s, n_tickers=7, lone_extra=True)
+    csv = tmp_path / "a.csv"
+    monkeypatch.setattr(sys, "argv", ["main.py", "dq", "--anomalies-csv", str(csv)])
+    main_mod.cmd_dq()
+    out = capsys.readouterr().out
+    assert "1 of 2 return anomalies are market-wide (>=20% of other priced tickers moved >=10% the same way" in out
+    assert "mkt 86%" in out and "own 0%" in out
+    rows = pd.read_csv(csv)
+    assert list(rows.columns)[:6] == ["ticker", "kind", "start", "end", "sessions", "value"]
+    assert list(rows.columns)[6:] == ["market_share", "market_wide"]
+    assert rows.set_index("ticker").loc["T0.NS", "market_wide"]
+
+
+def test_dq_marker_for_stale_run_is_a_dash(main_mod, Session, monkeypatch, capsys):
+    c = _walk()
+    c[5:12] = [c[5]] * 7
+    with Session() as s:
+        _add_asset(s, "S.NS", c)
+    monkeypatch.setattr(sys, "argv", ["main.py", "dq"])
+    main_mod.cmd_dq()
+    out = capsys.readouterr().out
+    line = [l for l in out.splitlines() if "stale_run" in l and "close" in l][0]
+    assert line.rstrip().endswith("-")
+    assert "0 of 0 return anomalies are market-wide" in out

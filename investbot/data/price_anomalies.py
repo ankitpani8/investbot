@@ -25,16 +25,26 @@ Kinds (stable strings, asserted in tests):
   difference to the previous bar at most `STALE_RUN_REL_TOL`). `sessions` counts the bars
   sharing the frozen close, the first included; `start`/`end` are the first and last of them.
 
+Market-wide tag (still report-only): for the return kinds, `market_share` is the share of the
+*other* priced tickers that moved at least `MARKET_MOVE_ABS_LOG_RET` the same way on the anomaly's
+date, and `market_wide` is set when that share is at least `MARKET_WIDE_MIN_SHARE` and at least
+`MARKET_WIDE_MIN_TICKERS` other tickers were priced. It separates real events (2004-05-17, the
+election-result crash) from single-name bad data; it removes nothing and it is a same-day
+cross-section, so it adds no lookahead beyond the next-bar rule of `spike_reversal`. `stale_run`
+keeps NaN / False. The "other tickers" are the assets the audit loaded, so `tickers=` narrows them.
+
 A return needs two valid closes (finite and positive). A NaN or non-positive close gives no
 flag, ends any stale run, and is never dropped from the frame (no NaN dropping here).
 
-Pure detector first (`detect_price_anomalies`, `summarise_anomalies`); the DB loader
+Pure detector first (`detect_price_anomalies`, `daily_move_counts`, `tag_market_wide`,
+`summarise_anomalies`); the DB loader
 (`audit_price_anomalies`) is at the bottom of the file.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 import numpy as np
@@ -61,6 +71,14 @@ STALE_RUN_MIN_SESSIONS: int = 5
 # Relative difference up to which two closes count as unchanged.
 STALE_RUN_REL_TOL: float = 1e-9
 
+# A ticker "moved hard" on a day when its close-to-close |log return| is at least this.
+MARKET_MOVE_ABS_LOG_RET: float = 0.10
+# A return anomaly is market-wide when at least this share of the other priced tickers moved hard
+# the same way that day...
+MARKET_WIDE_MIN_SHARE: float = 0.20
+# ...and at least this many other tickers were priced (a share of 3 tickers means nothing).
+MARKET_WIDE_MIN_TICKERS: int = 5
+
 ANOMALY_KINDS = ("spike_reversal", "extreme_move", "stale_run")
 _RETURN_KINDS = ("spike_reversal", "extreme_move")
 _EXPLAINING_ACTIONS = ("split", "bonus", "dividend")
@@ -76,6 +94,9 @@ class PriceAnomaly:
     end: date                        # == start for the return kinds
     sessions: int                    # 1 for the return kinds, bars with the frozen close for stale_run
     value: float                     # triggering log return; frozen close for stale_run
+    # Set by tag_market_wide; NaN / False until then and always for stale_run.
+    market_share: float = math.nan   # same-direction hard movers among the other priced tickers
+    market_wide: bool = False
 
 
 def _log_returns(close: np.ndarray) -> np.ndarray:
@@ -173,6 +194,66 @@ def detect_price_anomalies(
     return found
 
 
+def daily_move_counts(bars: pd.DataFrame) -> pd.DataFrame:
+    """
+    One asset's contribution to the cross-section, indexed by the normalised bar dates.
+
+    Integer columns `priced` (valid close-to-close log return, the `_log_returns` rule), `up`
+    (log return >= +MARKET_MOVE_ABS_LOG_RET) and `down` (<= -MARKET_MOVE_ABS_LOG_RET). A bar
+    without a valid return contributes 0 to all three; no row is dropped. Sum the frames of
+    all assets to get the `counts` argument of `tag_market_wide`. Pure.
+    """
+    idx = pd.DatetimeIndex(bars.index).normalize()
+    ret = _log_returns(bars["close"].to_numpy(dtype=float))
+    with np.errstate(invalid="ignore"):                    # NaN compares False
+        up = ret >= MARKET_MOVE_ABS_LOG_RET
+        down = ret <= -MARKET_MOVE_ABS_LOG_RET
+    return pd.DataFrame(
+        {"priced": np.isfinite(ret).astype(int), "up": up.astype(int), "down": down.astype(int)},
+        index=idx,
+    )
+
+
+def tag_market_wide(
+    anomalies: list[PriceAnomaly],
+    counts: pd.DataFrame,
+    own_moves: dict[tuple[str, date], tuple[int, int, int]] | None = None,
+) -> list[PriceAnomaly]:
+    """
+    Copies of `anomalies` with `market_share` / `market_wide` set for the return kinds. Pure.
+
+    `counts` is the per-date sum of `daily_move_counts` over all assets (columns `priced`, `up`,
+    `down`). Self is removed with the ticker's own row, `own_moves[(ticker, start)] = (priced,
+    up, down)`; when a key is missing the row is derived from the anomaly itself (priced, and a
+    hard mover in the direction of `value`). `market_share` = (same-sign hard movers - self) /
+    (priced - self), NaN when no other ticker is priced that day. `market_wide` needs the share
+    at least MARKET_WIDE_MIN_SHARE and at least MARKET_WIDE_MIN_TICKERS other priced tickers.
+    """
+    out: list[PriceAnomaly] = []
+    for a in anomalies:
+        if a.kind not in _RETURN_KINDS:
+            out.append(replace(a))
+            continue
+        key = pd.Timestamp(a.start).normalize()
+        if key in counts.index:
+            row = counts.loc[key]
+            priced, same = int(row["priced"]), int(row["up" if a.value > 0 else "down"])
+        else:
+            priced, same = 0, 0
+        own = (own_moves or {}).get((a.ticker, a.start))
+        if own is None:
+            own = (1, int(a.value > 0), int(a.value < 0))
+        self_priced, self_same = int(own[0]), int(own[1] if a.value > 0 else own[2])
+        others, movers = priced - self_priced, same - self_same
+        if others <= 0:
+            out.append(replace(a, market_share=math.nan, market_wide=False))
+            continue
+        share = movers / others
+        out.append(replace(a, market_share=share,
+                           market_wide=share >= MARKET_WIDE_MIN_SHARE and others >= MARKET_WIDE_MIN_TICKERS))
+    return out
+
+
 def summarise_anomalies(anomalies: list[PriceAnomaly]) -> pd.DataFrame:
     """
     Counts by calendar year of `start` (rows) and kind (columns, all of ANOMALY_KINDS).
@@ -213,6 +294,9 @@ def audit_price_anomalies(
     """
     `detect_price_anomalies` over the daily bars of every asset that has any, active or not (past
     index members are in the point-in-time universe). One asset's bars in memory at a time. Read-only.
+
+    The same pass sums `daily_move_counts` over the assets and keeps each asset's own row for its
+    anomaly dates; `tag_market_wide` then runs once at the end.
     """
     stmt = (
         select(Asset.id, Asset.ticker)
@@ -222,6 +306,8 @@ def audit_price_anomalies(
     if tickers is not None:
         stmt = stmt.where(Asset.ticker.in_(list(tickers)))
     found: list[PriceAnomaly] = []
+    counts: pd.DataFrame | None = None
+    own_moves: dict[tuple[str, date], tuple[int, int, int]] = {}
     for asset_id, ticker in session.execute(stmt).all():
         bars = pd.read_sql(
             select(PriceDaily.date, PriceDaily.open, PriceDaily.high, PriceDaily.low,
@@ -229,5 +315,13 @@ def audit_price_anomalies(
             .where(PriceDaily.asset_id == asset_id).order_by(PriceDaily.date),
             session.connection(), index_col="date", parse_dates=["date"],
         )
-        found.extend(detect_price_anomalies(bars, load_actions(session, ticker), ticker=ticker))
-    return found
+        mine = detect_price_anomalies(bars, load_actions(session, ticker), ticker=ticker)
+        found.extend(mine)
+        own = daily_move_counts(bars)
+        for a in mine:
+            if a.kind in _RETURN_KINDS:
+                own_moves[(ticker, a.start)] = tuple(int(v) for v in own.loc[pd.Timestamp(a.start)])
+        counts = own if counts is None else counts.add(own, fill_value=0).astype(int)
+    if counts is None:
+        return found
+    return tag_market_wide(found, counts, own_moves)

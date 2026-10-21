@@ -36,6 +36,7 @@ Usage:
                               # Exits 1 when index_membership rows differ from the change list
                               # (see `status`); --allow-stale-membership warns and continues
 """
+import math
 import sys
 import logging
 import signal
@@ -306,7 +307,8 @@ def _print_price_anomalies(session, csv_path: str | None) -> None:
     """The `dq` section "Price anomalies (report-only)". Never changes the exit code, never purges."""
     import pandas as pd
     from investbot.data.price_anomalies import (
-        ANOMALY_KINDS, audit_price_anomalies, largest_anomalies, summarise_anomalies,
+        ANOMALY_KINDS, MARKET_MOVE_ABS_LOG_RET, MARKET_WIDE_MIN_SHARE,
+        audit_price_anomalies, largest_anomalies, summarise_anomalies,
     )
 
     anomalies = audit_price_anomalies(session)
@@ -319,6 +321,10 @@ def _print_price_anomalies(session, csv_path: str | None) -> None:
         counts = ", ".join(f"{k} {int(summary.loc['total', k])} ({int(summary.loc['tickers', k])} tickers)"
                            for k in ANOMALY_KINDS)
         print(f"\n  {len(anomalies)} anomaly(ies): {counts}")
+        returns = [a for a in anomalies if a.kind in ("spike_reversal", "extreme_move")]
+        print(f"  {sum(a.market_wide for a in returns)} of {len(returns)} return anomalies are market-wide "
+              f"(>={MARKET_WIDE_MIN_SHARE:.0%} of other priced tickers moved >={MARKET_MOVE_ABS_LOG_RET:.0%} "
+              "the same way that day)")
         print("\n  By year of the first bar (last rows: total, distinct tickers):")
         print("\n".join("    " + line for line in summary.to_string().splitlines()))
         top = largest_anomalies(anomalies, 30)
@@ -326,12 +332,15 @@ def _print_price_anomalies(session, csv_path: str | None) -> None:
         for a in top:
             span = f"{a.start}" if a.start == a.end else f"{a.start} → {a.end}"
             what = f"close {a.value:g}" if a.kind == "stale_run" else f"log ret {a.value:+.3f}"
-            print(f"    {a.ticker:<16s} {a.kind:<15s} {span:<25s} {a.sessions:>3} bar(s)  {what}")
+            mkt = "-" if a.kind == "stale_run" or math.isnan(a.market_share) else (
+                f"{'mkt' if a.market_wide else 'own'} {a.market_share:.0%}")
+            print(f"    {a.ticker:<16s} {a.kind:<15s} {span:<25s} {a.sessions:>3} bar(s)  {what:<16s} {mkt}")
         print()
     if csv_path:
         pd.DataFrame(
-            [(a.ticker, a.kind, a.start, a.end, a.sessions, a.value) for a in anomalies],
-            columns=["ticker", "kind", "start", "end", "sessions", "value"],
+            [(a.ticker, a.kind, a.start, a.end, a.sessions, a.value, a.market_share, a.market_wide)
+             for a in anomalies],
+            columns=["ticker", "kind", "start", "end", "sessions", "value", "market_share", "market_wide"],
         ).to_csv(csv_path, index=False)
         print(f"  Price anomalies written to {csv_path}\n")
 
