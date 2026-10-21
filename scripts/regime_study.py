@@ -548,12 +548,6 @@ def _h6_section(res: rs.StudyResult, compare: rs.StudyResult | None) -> list[str
     return out
 
 
-#: The H4 tests that are "supported" under the fixed lag H in the earlier reports
-#: (2026-10-18 to 2026-10-20, both universes); the robust section always lists them.
-H4_SUPPORTED_TODAY: tuple[tuple[str, str], ...] = (
-    ("REGIME_SCORE_CHAOS", "FWD_VOLX_20"), ("REGIME_SCORE_CHAOS", "FWD_VOLX_60"),
-    ("VOL_RATIO", "FWD_VOLX_20"), ("VOL_RATIO", "FWD_VOLX_60"),
-)
 _VERDICTS = ("supported", "not supported", "wrong sign")
 _RULES = (("fixed lag H", "verdict"), ("auto", "verdict_auto"), ("boot", "verdict_boot"))
 #: A size-check rejection rate above this (twice the 5% level) is called over-rejection.
@@ -605,26 +599,110 @@ def h6_robust_clauses(h6: pd.DataFrame) -> tuple[str, str]:
             "persistence caveat in the H6 section.")
 
 
+_H_GROUPS = ("H1", "H2", "H3", "H4", "H5")
+_NUMBER_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+                 "ten", "eleven", "twelve")
+
+
+def _count_word(n: int) -> str:
+    return _NUMBER_WORDS[n] if n < len(_NUMBER_WORDS) else str(n)
+
+
+def supported_tests(tests: pd.DataFrame, verdict_col: str = "verdict") -> pd.DataFrame:
+    """The H1–H5 rows of ``StudyResult.tests`` whose ``verdict_col`` is "supported", in table
+    order (the index is reset)."""
+    keep = tests["group"].isin(_H_GROUPS).to_numpy() & (tests[verdict_col] == "supported").to_numpy()
+    return tests[keep].reset_index(drop=True)
+
+
+def _is_h4_volx(sup: pd.DataFrame) -> np.ndarray:
+    return ((sup["group"] == "H4") & sup["target"].str.startswith("FWD_VOLX_")).to_numpy(dtype=bool)
+
+
+def h1_h5_supported_clause(tests: pd.DataFrame) -> str:
+    """The first clause of the robust-options paragraph (no final punctuation): which H1–H5
+    tests are *supported* under the lag-H rule, named "<name> → <target>" and grouped by
+    H-group. Four wordings: none supported; only the H4 volatility tests (``FWD_VOLX_*``); H4
+    tests including other targets; some outside H4."""
+    sup = supported_tests(tests)
+    n = len(sup)
+    if n == 0:
+        return "No test of H1–H5 is *supported* under the lag-H rule in this run"
+    groups = "; ".join(
+        f"{g}: " + ", ".join(f"{x['name']} → {x['target']}" for _, x in df.iterrows())
+        for g, df in sup.groupby("group", sort=True))
+    vol = _is_h4_volx(sup)
+    if vol.all():
+        t = "test" if n == 1 else "tests"
+        verb, only = ("is", "result") if n == 1 else ("are", "results")
+        return (f"The {_count_word(n)} H4 volatility {t} ({groups.removeprefix('H4: ')}) {verb} "
+                f"the only *supported* {only} of H1–H5")
+    if (sup["group"] == "H4").all():
+        return (f"{n} H4 tests are *supported* under the lag-H rule in this run, including "
+                f"targets other than FWD_VOLX ({groups.removeprefix('H4: ')})")
+    return (f"{n} H1–H5 tests are *supported* under the lag-H rule in this run, some outside "
+            f"H4 ({groups})")
+
+
 def robust_options_paragraph(res: rs.StudyResult) -> str:
-    """"What the robust re-test would mean ..." with the H6 clauses built from ``res.h6``."""
+    """"What the robust re-test would mean ..." with the supported-set clause built from
+    ``res.tests`` and the H6 clauses from ``res.h6``."""
+    sup = supported_tests(res.tests)
+    n = len(sup)
+    clause = h1_h5_supported_clause(res.tests)
+    vol = _is_h4_volx(sup) if n else np.zeros(0, dtype=bool)
+    nv = int(vol.sum())
     shown, mechanics = h6_robust_clauses(res.h6)
-    return (
-        "**What the robust re-test would mean for the pending regime decision** "
-        "(DECISIONS_PENDING \"Regime study: results\", options (a)–(d)); this report does not "
-        "choose. The four H4 volatility tests (REGIME_SCORE_CHAOS / VOL_RATIO vs FWD_VOLX) are "
-        "the only *supported* results of H1–H5, " + shown + " If they stay *supported* under "
-        "the automatic lag and the bootstrap, the raw association is not an inference artefact, "
-        + mechanics + " If they become *not supported*, no pre-registered test of the regime "
-        "layer survives autocorrelation-robust inference: that removes the last evidence that "
-        "the regime inputs carry a signal on daily NIFTY50, which strengthens (d) (a fixed "
-        "Black-Litterman ↔ risk-parity blend until a regime signal passes) and weakens (b) "
-        "(fitting thresholds to inputs with no demonstrated signal). A robust rule can turn a "
-        "test *supported* only where it is less conservative than the lag-H t; the size check "
-        "above says how far either rule can be trusted on series as persistent as these, and a "
-        "rule that still over-rejects there makes a robust *supported* weak evidence while a "
-        "robust *not supported* stands. (c) (`CONFIDENCE_EMA_SPAN`) rests on the calibration "
-        "and churn tables: H5 is not supported under any rule unless the change table above "
-        "lists an H5 test.")
+    they, stay, become = ("it", "stays", "becomes") if n == 1 else ("they", "stay", "become")
+    pure = n > 0 and bool(vol.all())
+    head = ("**What the robust re-test would mean for the pending regime decision** "
+            "(DECISIONS_PENDING \"Regime study: results\", options (a)–(d)); this report does "
+            "not choose. ")
+    if n == 0:
+        body = (clause + ", so the robust rules have no supported result to confirm or remove "
+                "(H6 has its own section and verdict). Without a supported test no "
+                "pre-registered test of the regime layer survives even the lag-H rule: there is "
+                "no evidence that the regime inputs carry a signal on daily NIFTY50, which "
+                "strengthens (d) (a fixed Black-Litterman ↔ risk-parity blend until a regime "
+                "signal passes) and weakens (b) (fitting thresholds to inputs with no "
+                "demonstrated signal).")
+    else:
+        if pure:
+            first = clause + ", " + shown
+            stays = (f" If {they} {stay} *supported* under the automatic lag and the bootstrap, "
+                     "the raw association is not an inference artefact, " + mechanics)
+            all_gone = they
+        else:
+            if nv:
+                first = (clause + ". The H4 volatility tests among them (REGIME_SCORE_CHAOS / "
+                         "VOL_RATIO vs FWD_VOLX) are the ones H6 covers, " + shown)
+                stays = (f" If {they} {stay} *supported* under the automatic lag and the "
+                         "bootstrap, the raw associations are not inference artefacts; the "
+                         "other supported tests have no H6 counterpart. For the volatility "
+                         "tests the raw association is then not an inference artefact, "
+                         + mechanics)
+            else:
+                first = clause + ". None of them is a volatility rank test, so H6 does not bear on them."
+                stays = (f" If {they} {stay} *supported* under the automatic lag and the "
+                         "bootstrap, the raw associations are not inference artefacts.")
+            all_gone = "it" if n == 1 else "all of them"
+        body = (first + stays + f" If {all_gone} {become} *not supported*, no pre-registered "
+                "test of the regime layer survives autocorrelation-robust inference: that "
+                "removes the last evidence that the regime inputs carry a signal on daily "
+                "NIFTY50, which strengthens (d) (a fixed Black-Litterman ↔ risk-parity blend "
+                "until a regime signal passes) and weakens (b) (fitting thresholds to inputs "
+                "with no demonstrated signal).")
+    n_h5 = int((sup["group"] == "H5").sum()) if n else 0
+    h5 = ("H5 is not supported under any rule unless the change table above lists an H5 test."
+          if not n_h5 else
+          f"{n_h5} H5 test{'s are' if n_h5 > 1 else ' is'} *supported* under the lag-H rule "
+          "(listed above), so read the calibration table for which span.")
+    return (head + body + " A robust rule can turn a test *supported* only where it is less "
+            "conservative than the lag-H t; the size check above says how far either rule can "
+            "be trusted on series as persistent as these, and a rule that still over-rejects "
+            "there makes a robust *supported* weak evidence while a robust *not supported* "
+            "stands. (c) (`CONFIDENCE_EMA_SPAN`) rests on the calibration and churn tables: "
+            + h5)
 
 
 def _family_frames(r: rs.StudyResult) -> list[tuple[str, pd.DataFrame]]:
@@ -775,13 +853,13 @@ def _robust_section(res: rs.StudyResult, compare: rs.StudyResult | None,
         else:
             out.append(f"**Tests whose verdict changes under auto or boot ({len(ch)}):**\n")
             out.append(_table(_with_test_label(ch), _ROBUST_TEST_COLS))
-        keys = set(H4_SUPPORTED_TODAY)
-        listed = np.array([(n, t) in keys for n, t in zip(r.tests["name"], r.tests["target"])],
-                          dtype=bool)
-        h4 = r.tests[(r.tests["group"] == "H4").to_numpy() & listed]
-        out.append("The four H4 tests that are *supported* under the lag-H rule in the earlier "
-                   "reports, always listed:\n")
-        out.append(_table(_with_test_label(h4), _ROBUST_TEST_COLS))
+        out.append("The H1–H5 tests that are *supported* under the lag-H rule in this run:\n")
+        sup = supported_tests(r.tests)
+        if sup.empty:
+            out.append(f"None of the {len(r.tests)} H1–H5 tests is *supported* under the lag-H "
+                       "rule in this run.\n")
+        else:
+            out.append(_table(_with_test_label(sup), _ROBUST_TEST_COLS))
     out.append(resolution_note(res, compare))
     out.extend(_size_check_lines(size))
     out.append(robust_options_paragraph(res) + "\n")

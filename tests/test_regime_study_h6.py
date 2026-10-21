@@ -539,7 +539,10 @@ def test_robust_paragraph_when_h6_was_skipped():
 def test_robust_paragraph_keeps_the_other_sentences_and_one_h6_variant():
     from scripts import regime_study as runner
 
-    class Res:                      # only ``h6`` is read
+    from tests._regime_supported_fixture import H4_VOLX, rows_frame
+
+    class Res:                      # only ``tests`` and ``h6`` are read
+        tests = rows_frame(H4_VOLX)
         h6 = _h6_verdicts(["supported"] * 6)
     text = runner.robust_options_paragraph(Res())
     for kept in ("If they stay *supported* under the automatic lag and the bootstrap",

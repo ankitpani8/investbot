@@ -281,8 +281,12 @@ def test_report_section_and_options(studies):
     assert "35/2001" in text and "6/2001" in text and "at the floor" in text
     assert runner.robust_options_paragraph(on) in text
     assert "**The robust rules still over-reject**" in text and "auto on AR(1)" in text
-    for name, target in runner.H4_SUPPORTED_TODAY:
-        assert f"H4 {name} → {target}" in text
+    sup = runner.supported_tests(on.tests)
+    for _, x in sup.iterrows():
+        assert f"{x['group']} {x['name']} → {x['target']} (H {x['horizon']})" in text
+    assert "The H1–H5 tests that are *supported* under the lag-H rule in this run:" in text
+    tail = text.split("The H1–H5 tests that are *supported* under the lag-H rule in this run:\n")[1]
+    assert tail.lstrip().startswith("None of the") == sup.empty
     off = runner.render_report(studies["off"], info, date(2026, 10, 20), elapsed_s=1.0,
                                rss_mb=100.0, git_hash="abc1234", end=None)
     assert "## Robust inference" not in off
