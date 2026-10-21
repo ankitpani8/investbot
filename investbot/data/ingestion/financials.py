@@ -11,7 +11,11 @@ import yfinance as yf
 from sqlalchemy.orm import Session
 
 from investbot.data.models import Asset, Financial, FinancialDataAvailability
-from investbot.scoring.fundamental.point_in_time import available_from
+from investbot.scoring.fundamental.point_in_time import (
+    SOURCE_LODR_LAG,
+    available_from,
+    fiscal_year_end_months,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +201,23 @@ def ingest_financials_for_asset(session: Session, asset: Asset, period_type: str
         logger.warning(f"No financial data available for {ticker}")
         return 0
 
+    # Q4 gets the annual lag in every fiscal-year-end month of this company: March plus
+    # the months of all its annual period ends (stored, plus the ones in this call).
+    # Some of those annual rows are published after a given quarter, but the month a
+    # company closes its books is static company metadata, not price or result data,
+    # and the union with March can only make a row's date later, never earlier, so it
+    # cannot add lookahead.
+    annual_ends = [
+        pe for (pe,) in session.query(Financial.period_end).filter(
+            Financial.asset_id == asset.id,
+            Financial.period_type == "annual",
+            Financial.period_end.isnot(None),
+        )
+    ]
+    if period_type == "annual":
+        annual_ends += [pd.Timestamp(d).date() for d in all_dates]
+    fy_end_months = fiscal_year_end_months(annual_ends)
+
     rows_added = 0
     for col_date in sorted(all_dates):
         # Statement columns are period-end dates, not publication dates.
@@ -212,7 +233,9 @@ def ingest_financials_for_asset(session: Session, asset: Asset, period_type: str
 
         # yfinance gives no publication date: filing_date stays NULL and availability
         # falls back to the SEBI LODR lag.
-        avail, avail_source = available_from(period_end, period_type)
+        avail, avail_source = available_from(
+            period_end, period_type, fiscal_year_end_months=fy_end_months
+        )
 
         # Build the row from all three statements
         data = {
@@ -249,10 +272,37 @@ def ingest_financials_for_asset(session: Session, asset: Asset, period_type: str
 
         _update_availability(session, asset.id, fiscal_year, period_type, has_income, has_bs, has_cf)
 
-    if rows_added > 0:
+    # A new annual month makes earlier-stored quarters of that month a Q4.
+    rows_relagged = relag_quarterly_rows(session, asset.id, fy_end_months)
+
+    if rows_added > 0 or rows_relagged > 0:
         session.commit()
     logger.info(f"{ticker}: added {rows_added} {period_type} financial records")
+    if rows_relagged:
+        logger.info(f"{ticker}: moved {rows_relagged} quarterly rows to the annual lag")
     return rows_added
+
+
+def relag_quarterly_rows(session: Session, asset_id: int, fy_end_months) -> int:
+    """Recompute ``available_from`` of the asset's stored ``lodr_lag`` quarterly rows.
+
+    Only moves a date later, never earlier; ``published`` rows and rows without
+    ``available_from`` are left alone. Does not commit. Returns the number of rows moved.
+    """
+    rows = session.query(Financial).filter(
+        Financial.asset_id == asset_id,
+        Financial.period_type == "quarterly",
+        Financial.available_from_source == SOURCE_LODR_LAG,
+        Financial.available_from.isnot(None),
+        Financial.period_end.isnot(None),
+    )
+    moved = 0
+    for row in rows:
+        new, _ = available_from(row.period_end, "quarterly", fiscal_year_end_months=fy_end_months)
+        if new > row.available_from:
+            row.available_from = new
+            moved += 1
+    return moved
 
 
 def _update_availability(session, asset_id, fiscal_year, period_type, has_income, has_bs, has_cf):

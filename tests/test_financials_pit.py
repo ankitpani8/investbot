@@ -347,3 +347,219 @@ def test_ingest_annual_and_quarterly_share_a_period_end(session):
     assert [(r.period_end, r.available_from) for r in annual] == [
         (date(2025, 3, 31), date(2025, 5, 30)), (date(2026, 3, 31), date(2026, 5, 30)),
     ]
+
+
+# ── non-March fiscal years (task 500) ──
+
+from investbot.data.migrations.financials_fy_end import migrate_financials_fiscal_year_end  # noqa: E402
+from investbot.scoring.fundamental.point_in_time import fiscal_year_end_months  # noqa: E402
+
+DEC_FY = fiscal_year_end_months([date(2023, 12, 31), date(2024, 12, 31)])
+MAR_FY = fiscal_year_end_months([date(2024, 3, 31), date(2025, 3, 31)])
+
+
+def _old_rule(pe: date) -> date:
+    """available_from for a quarterly row before task 500 (March-only Q4)."""
+    return pe + timedelta(days=ANNUAL_LAG_DAYS if pe.month == 3 else QUARTERLY_LAG_DAYS)
+
+
+def _month_end(year: int, month: int) -> date:
+    return (pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthEnd(0)).date()
+
+
+def test_fiscal_year_end_months_always_has_march():
+    assert DEC_FY == frozenset({3, 12})
+    assert MAR_FY == frozenset({3})
+    assert fiscal_year_end_months([]) == frozenset({3})
+    assert fiscal_year_end_months([pd.Timestamp("2024-06-30")]) == frozenset({3, 6})
+    # A company that moved its year end keeps 60 days on both months.
+    assert fiscal_year_end_months([date(2019, 3, 31), date(2020, 12, 31)]) == frozenset({3, 12})
+
+
+def test_december_fy_quarters():
+    def af(pe):
+        return available_from(pe, "quarterly", fiscal_year_end_months=DEC_FY)
+
+    assert af(date(2025, 12, 31)) == (date(2025, 12, 31) + timedelta(days=60), "lodr_lag")
+    assert af(date(2025, 9, 30)) == (date(2025, 9, 30) + timedelta(days=45), "lodr_lag")
+    assert af(date(2025, 6, 30)) == (date(2025, 6, 30) + timedelta(days=45), "lodr_lag")
+    assert af(date(2025, 3, 31)) == (date(2025, 3, 31) + timedelta(days=60), "lodr_lag")   # March always in
+
+
+@pytest.mark.parametrize("month", range(1, 13))
+def test_march_fy_identical_to_before(month):
+    pe = _month_end(2025, month)
+    expected = (_old_rule(pe), "lodr_lag")
+    assert available_from(pe, "quarterly", fiscal_year_end_months=MAR_FY) == expected
+    assert available_from(pe, "quarterly") == expected           # default argument
+    assert available_from(pe, "annual", fiscal_year_end_months=DEC_FY) == available_from(pe, "annual")
+
+
+def test_published_path_ignores_months():
+    assert available_from(date(2025, 12, 31), "quarterly", date(2026, 1, 20),
+                          fiscal_year_end_months=DEC_FY) == (date(2026, 1, 20), "published")
+
+
+def test_new_rule_never_earlier_than_old():
+    rng = np.random.default_rng(500)
+    base = date(2000, 1, 1)
+    for _ in range(2000):
+        pe = base + timedelta(days=int(rng.integers(0, 365 * 30)))
+        k = int(rng.integers(0, 13))
+        annual_months = [_month_end(2020, int(m)) for m in rng.choice(np.arange(1, 13), size=k, replace=False)]
+        months = fiscal_year_end_months(annual_months)
+        new, _ = available_from(pe, "quarterly", fiscal_year_end_months=months)
+        old, _ = available_from(pe, "quarterly")
+        assert new >= old
+        assert new >= _old_rule(pe)
+
+
+def test_as_of_december_fy_q4_not_visible_at_45_days():
+    q4 = date(2025, 12, 31)
+    ends = [date(2025, 6, 30), date(2025, 9, 30), q4]
+    fin = pd.DataFrame({
+        "period_end": ends,
+        "available_from": [available_from(pe, "quarterly", fiscal_year_end_months=DEC_FY)[0] for pe in ends],
+        "revenue": [1.0, 2.0, 3.0],
+    })
+    assert q4 not in set(financials_as_of(fin, q4 + timedelta(days=45))["period_end"])
+    assert q4 not in set(financials_as_of(fin, q4 + timedelta(days=59))["period_end"])
+    assert q4 in set(financials_as_of(fin, q4 + timedelta(days=60))["period_end"])
+
+
+class DecemberFYTicker(FakeTicker):
+    def __init__(self, ticker):
+        super().__init__(ticker)
+        self.financials = _stmt({"Total Revenue": 400.0}, pd.to_datetime(["2024-12-31", "2025-12-31"]))
+
+
+def test_ingest_annual_december_moves_stored_december_quarters(session, monkeypatch):
+    asset = session.query(Asset).one()
+    assert fin_mod.ingest_financials_for_asset(session, asset, "quarterly") == 5
+    # A published December quarter must not move.
+    session.add(Financial(asset_id=asset.id, fiscal_year=2024, period_type="quarterly",
+                          period_end=date(2024, 12, 31), filing_date=date(2025, 1, 20),
+                          available_from=date(2025, 1, 20), available_from_source="published"))
+    session.commit()
+
+    def avail():
+        return {r.period_end: r.available_from
+                for r in session.query(Financial).filter_by(period_type="quarterly")}
+
+    before = avail()
+    assert before[date(2025, 12, 31)] == date(2025, 12, 31) + timedelta(days=45)
+
+    monkeypatch.setattr(fin_mod.yf, "Ticker", DecemberFYTicker)
+    assert fin_mod.ingest_financials_for_asset(session, asset, "annual") == 2
+    session.expire_all()
+    after = avail()
+    assert after[date(2025, 12, 31)] == date(2025, 12, 31) + timedelta(days=60)
+    assert after[date(2024, 12, 31)] == date(2025, 1, 20)
+    assert {pe: d for pe, d in after.items() if pe != date(2025, 12, 31)} == {
+        pe: d for pe, d in before.items() if pe != date(2025, 12, 31)
+    }
+    published = session.query(Financial).filter_by(period_type="quarterly", period_end=date(2024, 12, 31)).one()
+    assert published.available_from_source == "published"
+
+
+def test_ingest_quarterly_after_december_annual_gets_60_days(session, monkeypatch):
+    monkeypatch.setattr(fin_mod.yf, "Ticker", DecemberFYTicker)
+    asset = session.query(Asset).one()
+    fin_mod.ingest_financials_for_asset(session, asset, "annual")
+    fin_mod.ingest_financials_for_asset(session, asset, "quarterly")
+    q = {r.period_end: r.available_from
+         for r in session.query(Financial).filter_by(period_type="quarterly")}
+    assert q[date(2025, 12, 31)] == date(2026, 3, 1)
+    assert q[date(2025, 9, 30)] == date(2025, 11, 14)
+    assert q[date(2026, 3, 31)] == date(2026, 5, 30)
+
+
+def _new_schema_engine():
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine)
+    return engine
+
+
+def _fy_rows():
+    """Mixed rows: asset 1 March FY, asset 2 December FY, asset 3 no annual rows."""
+    def q(id_, asset, pe, source="lodr_lag", avail=None, filing=None):
+        if avail is None and source == "lodr_lag":
+            avail = available_from(pe, "quarterly")[0]       # the pre-task-500 rule
+        return dict(id=id_, asset_id=asset, fiscal_year=pe.year, period_type="quarterly",
+                    period_end=pe, filing_date=filing, available_from=avail,
+                    available_from_source=source if avail is not None else None)
+
+    def a(id_, asset, pe):
+        return dict(id=id_, asset_id=asset, fiscal_year=pe.year, period_type="annual", period_end=pe,
+                    filing_date=None, available_from=available_from(pe, "annual")[0],
+                    available_from_source="lodr_lag")
+
+    return [
+        a(1, 1, date(2025, 3, 31)),
+        q(2, 1, date(2024, 12, 31)),
+        q(3, 1, date(2025, 3, 31)),
+        a(4, 2, date(2023, 12, 31)),
+        a(5, 2, date(2024, 12, 31)),
+        q(6, 2, date(2024, 12, 31)),                                         # moves
+        q(7, 2, date(2025, 12, 31)),                                         # moves
+        q(8, 2, date(2025, 9, 30)),
+        q(9, 2, date(2025, 3, 31)),
+        q(10, 2, date(2023, 12, 31), source="published", avail=date(2024, 1, 25), filing=date(2024, 1, 25)),
+        q(11, 2, date(2022, 12, 31), source=None, avail=None),               # NULL available_from
+        q(12, 3, date(2025, 12, 31)),
+    ]
+
+
+def _fy_dump(engine) -> pd.DataFrame:
+    with engine.connect() as conn:
+        return pd.read_sql(text("SELECT * FROM financials ORDER BY id"), conn).set_index("id")
+
+
+def test_fy_end_migration_updates_only_december_fy_lodr_quarters():
+    engine = _new_schema_engine()
+    with engine.begin() as conn:
+        conn.execute(Financial.__table__.insert(), _fy_rows())
+    before = _fy_dump(engine)
+
+    assert migrate_financials_fiscal_year_end(engine) == {"checked": 7, "updated": 2}
+    after = _fy_dump(engine)
+    changed = sorted(i for i in before.index
+                     if not before.loc[i].equals(after.loc[i]))
+    assert changed == [6, 7]
+    assert after.loc[6, "available_from"] == "2025-03-01"
+    assert after.loc[7, "available_from"] == "2026-03-01"
+    assert (after["available_from_source"].fillna("") == before["available_from_source"].fillna("")).all()
+
+    assert migrate_financials_fiscal_year_end(engine) == {"checked": 7, "updated": 0}
+    pd.testing.assert_frame_equal(after, _fy_dump(engine))
+
+
+def test_fy_end_migration_never_moves_a_row_earlier():
+    engine = _new_schema_engine()
+    late = date(2025, 6, 1)    # later than the new rule's 2025-03-01
+    rows = [r for r in _fy_rows() if r["id"] in (4, 5)]
+    rows.append(dict(id=20, asset_id=2, fiscal_year=2024, period_type="quarterly",
+                     period_end=date(2024, 12, 31), filing_date=None, available_from=late,
+                     available_from_source="lodr_lag"))
+    with engine.begin() as conn:
+        conn.execute(Financial.__table__.insert(), rows)
+    assert migrate_financials_fiscal_year_end(engine) == {"checked": 1, "updated": 0}
+    assert _fy_dump(engine).loc[20, "available_from"] == late.isoformat()
+
+
+def test_fy_end_migration_noop_on_missing_table_and_old_schema():
+    assert migrate_financials_fiscal_year_end(create_engine("sqlite://", future=True)) == {
+        "checked": 0, "updated": 0}
+    assert migrate_financials_fiscal_year_end(_old_schema_engine()) == {"checked": 0, "updated": 0}
+
+
+def test_init_db_runs_both_migrations(monkeypatch):
+    from investbot.data import db
+
+    engine = _old_schema_engine()
+    monkeypatch.setattr(db, "engine", engine)
+    db.init_db()
+    df = _dump(engine).set_index("id")
+    # Asset 2 has an annual row ending 31 Dec, so its December quarter gets 60 days.
+    assert df.loc[6, "available_from"] == "2026-03-01"
+    assert df.loc[3, "available_from"] == "2025-05-30"
