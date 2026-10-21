@@ -27,7 +27,7 @@ anything that changes the architecture.
 ## Layout
 
 ```
-main.py                         CLI: setup | ingest | run | status | gaps | dq | score | evaluate | constituents | coverage
+main.py                         CLI: setup | ingest | run | status | gaps | dq | score | evaluate | constituents | coverage | backtest
 investbot/config/               settings (.env), tickers, tax regimes
 investbot/data/                 SQLAlchemy models, db session, seed, ingestion (yfinance)
 investbot/scheduler/            APScheduler jobs

@@ -35,6 +35,13 @@ Usage:
                               # Walk-forward forward-return evaluation → docs/reports/eval_<date>.md
                               # Exits 1 when index_membership rows differ from the change list
                               # (see `status`); --allow-stale-membership warns and continues
+    python main.py backtest --signal COLUMN --freq D|W|M|<n>D [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+                            [--universe index|active] [--quantile 0.2] [--capital 500000]
+                            [--lower-is-better] [--out PATH]
+                              # After-tax backtest of one harness signal (e.g. BASE_MOM_12_1, TECH_SCORE,
+                              # SIG_*) vs the equal-weight universe and vs the same run with tax=False;
+                              # markdown report to PATH or stdout. Read-only, no network. Exits 1 when
+                              # index_membership differs from the change list (see `status`)
 """
 import math
 import sys
@@ -563,6 +570,61 @@ def cmd_constituents(fetcher=None):
     sys.exit(1)
 
 
+def cmd_backtest(argv: list[str] | None = None):
+    """After-tax backtest of one harness signal vs the equal-weight universe. Read-only."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="main.py backtest",
+        description="After-tax backtest of one harness signal at one rebalance frequency, "
+                    "next to the equal-weight universe and the same strategy with tax=False")
+    parser.add_argument("--signal", required=True,
+                        help="harness column: SIG_*, TECH_SCORE, TECH_SCORE_<FAMILY>, BASE_*")
+    parser.add_argument("--freq", required=True, help="rebalance frequency: D, W, M or <n>D")
+    parser.add_argument("--start", default=None, metavar="YYYY-MM-DD")
+    parser.add_argument("--end", default=None, metavar="YYYY-MM-DD")
+    parser.add_argument("--universe", choices=("index", "active"), default="index")
+    parser.add_argument("--quantile", type=float, default=None,
+                        help="share of eligible names held (default 0.2)")
+    parser.add_argument("--capital", type=float, default=500_000.0, help="initial capital in rupees")
+    parser.add_argument("--lower-is-better", action="store_true",
+                        help="hold the lowest signal values instead of the highest")
+    parser.add_argument("--out", default=None, metavar="PATH",
+                        help="write the markdown report to PATH instead of stdout")
+    args = parser.parse_args(argv or [])
+
+    from investbot.backtest.runner import render_report, run_backtest
+    from investbot.backtest.strategies import DEFAULT_QUANTILE
+
+    def _date(text):
+        return datetime.strptime(text, "%Y-%m-%d").date() if text else None
+
+    try:
+        start, end = _date(args.start), _date(args.end)
+    except ValueError as e:
+        parser.error(str(e))
+    logging.getLogger("investbot.scoring").setLevel(logging.WARNING)
+    session = SessionLocal()
+    try:
+        run = run_backtest(
+            session, signal=args.signal, freq=args.freq, start=start, end=end,
+            universe=args.universe,
+            quantile=DEFAULT_QUANTILE if args.quantile is None else args.quantile,
+            initial_capital=args.capital, higher_is_better=not args.lower_is_better)
+    except ValueError as e:
+        print(f"backtest: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        session.close()
+    report = render_report(run)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(report)
+        print(f"  Report written to {args.out}")
+    else:
+        print(report)
+
+
 # ── CLI dispatch ──────────────────────────────────────────
 COMMANDS = {
     "setup": cmd_setup,
@@ -575,6 +637,7 @@ COMMANDS = {
     "evaluate": cmd_evaluate,
     "constituents": cmd_constituents,
     "coverage": cmd_coverage,
+    "backtest": cmd_backtest,
 }
 
 if __name__ == "__main__":
@@ -586,5 +649,7 @@ if __name__ == "__main__":
         cmd_ingest(sys.argv[2:])
     elif sys.argv[1] == "coverage":
         cmd_coverage(sys.argv[2:])
+    elif sys.argv[1] == "backtest":
+        cmd_backtest(sys.argv[2:])
     else:
         COMMANDS[sys.argv[1]]()
