@@ -176,9 +176,9 @@ def test_membership_today_is_the_current_list(intervals):
 def test_known_changes_on_boundary_dates(intervals):
     # HDFC merged into HDFC Bank: last session 2023-07-12, LTIMindtree first session 2023-07-13
     assert "HDFC.NS" in im.members_as_of(intervals, D(2023, 7, 12))
-    assert "LTIM.NS" not in im.members_as_of(intervals, D(2023, 7, 12))
+    assert "LTM.NS" not in im.members_as_of(intervals, D(2023, 7, 12))
     assert "HDFC.NS" not in im.members_as_of(intervals, D(2023, 7, 13))
-    assert "LTIM.NS" in im.members_as_of(intervals, D(2023, 7, 13))
+    assert "LTM.NS" in im.members_as_of(intervals, D(2023, 7, 13))
     # the five exit dates the tickers file called unverified
     for t, last in [("BPCL.NS", D(2025, 3, 27)), ("BRITANNIA.NS", D(2025, 3, 27)),
                     ("DIVISLAB.NS", D(2024, 9, 29)), ("HEROMOTOCO.NS", D(2025, 9, 29)),
@@ -212,7 +212,7 @@ def test_pre_2019_changes_match_the_releases(intervals):
     assert _on(intervals, D(2018, 3, 28)) == before  # nothing in between
 
     out_2016 = {"CAIRN.NS", "PNB.NS", "VEDL.NS"}
-    in_2016 = {"AUROPHARMA.NS", "INFRATEL.NS", "EICHERMOT.NS", "TATAMTRDVR.NS"}
+    in_2016 = {"AUROPHARMA.NS", "INDUSTOWER.NS", "EICHERMOT.NS", "TATAMTRDVR.NS"}
     before, on = _on(intervals, D(2016, 3, 31)), _on(intervals, D(2016, 4, 1))
     assert out_2016 <= before and not in_2016 & before and len(before) == 50
     assert in_2016 <= on and not out_2016 & on and len(on) == 51
@@ -347,6 +347,42 @@ def test_every_source_is_a_press_release_and_symbols_are_flagged(changes):
     assert not (old["note"].str.contains("assumed") & ~old["note"].str.contains("not verified")).any()
 
 
+SYMBOL_CHANGES_CSV = im.CHANGES_DIR / "nse_symbol_changes.csv"
+SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
+
+
+@pytest.fixture(scope="module")
+def symbol_changes():
+    return pd.read_csv(SYMBOL_CHANGES_CSV, dtype=str, keep_default_na=False)
+
+
+def test_nse_symbol_changes_shape_and_source(symbol_changes):
+    assert list(symbol_changes.columns) == ["old_symbol", "new_symbol", "change_date", "company_name", "source"]
+    assert len(symbol_changes) > 0
+    assert (symbol_changes["source"] == SYMBOL_CHANGES_URL).all()
+    assert (symbol_changes[["old_symbol", "new_symbol", "company_name"]].apply(lambda c: c.str.strip() != "")).all().all()
+    assert pd.to_datetime(symbol_changes["change_date"], format="%Y-%m-%d").notna().all()
+    assert not symbol_changes["old_symbol"].duplicated().any()
+
+
+def test_nse_symbol_changes_are_applied_to_the_change_list(symbol_changes, changes):
+    tickers = set(changes["ticker"])
+    # an old symbol is gone from the change list, the new one is in it
+    assert not {o + ".NS" for o in symbol_changes["old_symbol"]} & tickers
+    assert {n + ".NS" for n in symbol_changes["new_symbol"]} <= tickers
+    # every row of a renamed ticker cites the change in its note, and no longer claims it is unverified
+    for r in symbol_changes.itertuples():
+        rows = changes[changes["ticker"] == r.new_symbol + ".NS"]
+        cite = f"NSE symbol change {r.old_symbol}\u2192{r.new_symbol} {r.change_date} (nse_symbol_changes.csv)"
+        assert rows["note"].str.contains(cite, regex=False).all(), r.old_symbol
+        assert not rows["note"].str.contains("current Yahoo symbol not verified").any(), r.old_symbol
+
+
+def test_nse_symbol_changes_do_not_clash_with_the_current_list(symbol_changes):
+    current = {t for t, *_ in NIFTY50_TICKERS}
+    assert not {o + ".NS" for o in symbol_changes["old_symbol"]} & current
+
+
 def test_only_complete_stints_start_after_the_first_change(intervals):
     assert (intervals.loc[~intervals["complete"], "effective_from"] == im.HISTORY_START).all()
     assert intervals.loc[intervals["complete"], "effective_from"].min() >= im.COMPLETE_FROM
@@ -422,7 +458,7 @@ def test_sync_rows_match_intervals_and_repair_drift(session):
     r = rows[("HDFC.NS", im.HISTORY_START)]
     assert (r.effective_to, r.verified, r.index_code) == (D(2023, 7, 12), False, "NIFTY50")
     assert r.source.endswith("ind_prs04072023.pdf")
-    assert rows[("LTIM.NS", D(2023, 7, 13))].verified is True
+    assert rows[("LTM.NS", D(2023, 7, 13))].verified is True
 
     # tamper: a stale stint and a wrong end date are repaired by the next sync
     session.add(IndexMembership(index_code="NIFTY50", asset_id=ids["TCS.NS"],

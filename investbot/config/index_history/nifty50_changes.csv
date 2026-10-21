@@ -20,7 +20,7 @@ effective_date,action,ticker,name,source,note
 1999-05-26,add,NOVARTIND.NS,Novartis India,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
 1999-05-26,add,RECKITTBEN.NS,Reckitt & Colman,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,"release name Reckitt & Colman Ltd., same company as Reckitt & Benckiser (India) in the 2002 removal; symbol not read in a release, assumed; Yahoo symbol not verified"
 1999-09-08,remove,IFCI.NS,Industrial Finance Corporation of India,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,release symbol; current Yahoo symbol not verified
-1999-09-08,remove,INDRAYON.NS,Indian Rayon,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+1999-09-08,remove,ABIRLANUVO.NS,Indian Rayon,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,"release gives name only; symbol not read in a release, INDRAYON confirmed by the NSE symbol change INDRAYON→ABIRLANUVO 2005-12-07 (nse_symbol_changes.csv)"
 1999-09-08,add,SATYAMCOMP.NS,Satyam Computer Services,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,release symbol; current Yahoo symbol not verified
 1999-09-08,add,BRITANNIA.NS,Britannia Industries,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,
 2000-05-10,remove,TVSSUZUKI.NS,TVS Suzuki,https://www.niftyindices.com/Press_Release/ind_prs26042000.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
@@ -128,8 +128,8 @@ effective_date,action,ticker,name,source,note
 2014-03-28,remove,JPASSOCIAT.NS,Jaiprakash Associates,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,
 2014-03-28,remove,RANBAXY.NS,Ranbaxy Laboratories,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,release symbol; current Yahoo symbol not verified
 2014-03-28,add,TECHM.NS,Tech Mahindra,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,
-2014-03-28,add,MCDOWELL-N.NS,United Spirits,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,release symbol; current Yahoo symbol not verified
-2014-09-19,remove,MCDOWELL-N.NS,United Spirits,https://www.niftyindices.com/Press_Release/ind_prs20082014.pdf,release symbol; current Yahoo symbol not verified
+2014-03-28,add,UNITDSPR.NS,United Spirits,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,release symbol; NSE symbol change MCDOWELL-N→UNITDSPR 2024-06-07 (nse_symbol_changes.csv)
+2014-09-19,remove,UNITDSPR.NS,United Spirits,https://www.niftyindices.com/Press_Release/ind_prs20082014.pdf,release symbol; NSE symbol change MCDOWELL-N→UNITDSPR 2024-06-07 (nse_symbol_changes.csv)
 2014-09-19,add,ZEEL.NS,Zee Entertainment Enterprises,https://www.niftyindices.com/Press_Release/ind_prs20082014.pdf,
 2015-03-27,remove,DLF.NS,DLF,https://www.niftyindices.com/Press_Release/ind_prs20022015.pdf,
 2015-03-27,remove,JINDALSTEL.NS,Jindal Steel & Power,https://www.niftyindices.com/Press_Release/ind_prs20022015.pdf,
@@ -143,12 +143,12 @@ effective_date,action,ticker,name,source,note
 2016-04-01,remove,PNB.NS,Punjab National Bank,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
 2016-04-01,remove,VEDL.NS,Vedanta,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
 2016-04-01,add,AUROPHARMA.NS,Aurobindo Pharma,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
-2016-04-01,add,INFRATEL.NS,Bharti Infratel,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
+2016-04-01,add,INDUSTOWER.NS,Bharti Infratel,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,NSE symbol change INFRATEL→INDUSTOWER 2020-12-18 (nse_symbol_changes.csv)
 2016-04-01,add,EICHERMOT.NS,Eicher Motors,https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,
 2016-04-01,add,TATAMTRDVR.NS,Tata Motors (DVR),https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf,"temporary 51st member: differential-voting-rights share class added as an additional security (the release says the index then has 51 securities); in the index until its exclusion on 2017-09-29. The ordinary shares (TATAMOTORS, now TMPV.NS) were a member throughout; release symbol; current Yahoo symbol not verified"
 2017-03-31,remove,BHEL.NS,Bharat Heavy Electricals,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,
 2017-03-31,remove,IDEA.NS,Idea Cellular,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,release symbol; current Yahoo symbol not verified
-2017-03-31,add,IBULHSGFIN.NS,Indiabulls Housing Finance,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,
+2017-03-31,add,SAMMAANCAP.NS,Indiabulls Housing Finance,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,NSE symbol change IBULHSGFIN→SAMMAANCAP 2024-07-26 (nse_symbol_changes.csv)
 2017-03-31,add,IOC.NS,Indian Oil Corporation,https://www.niftyindices.com/Press_Release/ind_prs16022017.pdf,
 2017-05-26,remove,GRASIM.NS,Grasim Industries,https://www.niftyindices.com/Press_Release/ind_prs27042017.pdf,
 2017-05-26,add,VEDL.NS,Vedanta,https://www.niftyindices.com/Press_Release/ind_prs27042017.pdf,
@@ -169,13 +169,13 @@ effective_date,action,ticker,name,source,note
 2018-09-28,add,JSWSTEEL.NS,JSW Steel,https://www.niftyindices.com/Press_Release/ind_prs28082018.pdf,
 2019-03-29,remove,HINDPETRO.NS,Hindustan Petroleum Corporation,https://www.niftyindices.com/Press_Release/ind_prs25022019.pdf,
 2019-03-29,add,BRITANNIA.NS,Britannia Industries,https://www.niftyindices.com/Press_Release/ind_prs25022019.pdf,
-2019-09-27,remove,IBULHSGFIN.NS,Indiabulls Housing Finance,https://www.niftyindices.com/Press_Release/ind_prs28082019.pdf,
+2019-09-27,remove,SAMMAANCAP.NS,Indiabulls Housing Finance,https://www.niftyindices.com/Press_Release/ind_prs28082019.pdf,NSE symbol change IBULHSGFIN→SAMMAANCAP 2024-07-26 (nse_symbol_changes.csv)
 2019-09-27,add,NESTLEIND.NS,Nestle India,https://www.niftyindices.com/Press_Release/ind_prs28082019.pdf,
 2020-03-19,remove,YESBANK.NS,Yes Bank,https://www.niftyindices.com/Press_Release/ind_prs16032020.pdf,removal accelerated from 2020-03-27 (ind_prs18022020) after the Yes Bank reconstruction scheme
 2020-03-19,add,SHREECEM.NS,Shree Cement,https://www.niftyindices.com/Press_Release/ind_prs16032020.pdf,
 2020-07-31,remove,VEDL.NS,Vedanta,https://www.niftyindices.com/Press_Release/ind_prs02072020_1.pdf,proposed voluntary delisting
 2020-07-31,add,HDFCLIFE.NS,HDFC Life Insurance Company,https://www.niftyindices.com/Press_Release/ind_prs02072020_1.pdf,
-2020-09-25,remove,INFRATEL.NS,Bharti Infratel,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
+2020-09-25,remove,INDUSTOWER.NS,Bharti Infratel,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,NSE symbol change INFRATEL→INDUSTOWER 2020-12-18 (nse_symbol_changes.csv)
 2020-09-25,remove,ZEEL.NS,Zee Entertainment Enterprises,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
 2020-09-25,add,DIVISLAB.NS,Divi's Laboratories,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
 2020-09-25,add,SBILIFE.NS,SBI Life Insurance Company,https://www.niftyindices.com/Press_Release/ind_prs20082020.pdf,
@@ -186,13 +186,13 @@ effective_date,action,ticker,name,source,note
 2022-09-30,remove,SHREECEM.NS,Shree Cement,https://www.niftyindices.com/Press_Release/ind_prs01092022.pdf,
 2022-09-30,add,ADANIENT.NS,Adani Enterprises,https://www.niftyindices.com/Press_Release/ind_prs01092022.pdf,
 2023-07-13,remove,HDFC.NS,Housing Development Finance Corporation,https://www.niftyindices.com/Press_Release/ind_prs04072023.pdf,amalgamation with HDFC Bank
-2023-07-13,add,LTIM.NS,LTIMindtree,https://www.niftyindices.com/Press_Release/ind_prs04072023.pdf,
+2023-07-13,add,LTM.NS,LTIMindtree,https://www.niftyindices.com/Press_Release/ind_prs04072023.pdf,NSE symbol change LTIM→LTM 2026-02-27 (nse_symbol_changes.csv)
 2023-07-20,add,JIOFIN.NS,Jio Financial Services,https://www.niftyindices.com/Press_Release/ind_prs17072023.pdf,"temporary 51st member: demerger from Reliance, in the index at a constant price before it listed on 2023-08-21"
 2023-09-07,remove,JIOFIN.NS,Jio Financial Services,https://www.niftyindices.com/Press_Release/ind_prs05092023.pdf,temporary member excluded; JIOFIN is added again on 2025-03-28
 2024-03-28,remove,UPL.NS,UPL,https://www.niftyindices.com/Press_Release/ind_prs28022024.pdf,
 2024-03-28,add,SHRIRAMFIN.NS,Shriram Finance,https://www.niftyindices.com/Press_Release/ind_prs28022024.pdf,
 2024-09-30,remove,DIVISLAB.NS,Divi's Laboratories,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
-2024-09-30,remove,LTIM.NS,LTIMindtree,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
+2024-09-30,remove,LTM.NS,LTIMindtree,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,NSE symbol change LTIM→LTM 2026-02-27 (nse_symbol_changes.csv)
 2024-09-30,add,BEL.NS,Bharat Electronics,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
 2024-09-30,add,TRENT.NS,Trent,https://www.niftyindices.com/Press_Release/ind_prs23082024.pdf,
 2025-01-06,add,ITCHOTELS.NS,ITC Hotels,https://www.niftyindices.com/Press_Release/ind_prs30122024.pdf,"temporary 51st member: demerger from ITC, dummy symbol DUMMYITC at zero price until it listed on 2025-01-29"
