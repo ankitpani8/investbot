@@ -28,10 +28,14 @@ The same holds for 2016-04-01 .. 2017-09-28, when the Tata Motors DVR share clas
 51 securities". It is a separate ticker and is marked `temporary` for the same reason.
 
 Source chain: every NIFTY 50 change is read from the NSE Indices press releases (niftyindices.com
-`Press_Release/*.pdf`; before the 2015 rebrand the index is "CNX Nifty"). The chain runs from the
-2013-08-27 release (effective 2013-09-27) to the current list and is gap-free: the reverse walk
-from today's list never contradicts a change and gives 50 names (51 in the `temporary` windows)
-on every day. Releases before 2013-08 were not read.
+`Press_Release/*.pdf`; before the 2015 rebrand the index is "CNX Nifty" or "S&P CNX Nifty"). The chain
+runs from the 1998-09-02 release (effective 1998-10-07, the oldest release the archive lists) to the
+current list and is gap-free: the reverse walk from today's list never contradicts a change and gives
+50 names (51 in the `temporary` windows) on every day from 1998-10-07. The 1998-10-07 change is the
+first one in the archive, so the 50 names before it are the reverse-walk result, not sourced.
+Releases before about 2012 give company names only (no symbol column); where no release read gives
+the symbol, the CSV note says so and the symbol is the NSE trading symbol, assumed. A company that
+was renamed keeps one ticker where the reverse walk requires it (the note says so).
 
 Symbols are the press-release symbol plus `.NS`; one company keeps one ticker
 (ZOMATO is ETERNAL.NS; TATAMOTORS.NS is TMPV.NS, which never left the index).
@@ -59,11 +63,11 @@ NIFTY50_CHANGES_CSV = CHANGES_DIR / "nifty50_changes.csv"
 
 # NIFTY50_TICKERS is the list as of this date; bump it with the list and append the changes.
 CURRENT_AS_OF = date(2026, 10, 18)
-# Start of the studied window (the first read release, 2013-08-27, rounded down to the 1st of its
+# Start of the studied window (the first read release, 1998-09-02, rounded down to the 1st of its
 # month); the start of stints that began earlier is unknown.
-HISTORY_START = date(2013, 8, 1)
+HISTORY_START = date(1998, 9, 1)
 # Earliest date from which every later change is sourced (the first sourced change).
-COMPLETE_FROM = date(2013, 9, 27)
+COMPLETE_FROM = date(1998, 10, 7)
 
 CURRENT_LIST_SOURCE = "investbot/config/tickers.py NIFTY50_TICKERS (NSE ind_nifty50list.csv, 2026-10-18)"
 

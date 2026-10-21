@@ -184,7 +184,7 @@ def test_known_changes_on_boundary_dates(intervals):
                     ("DIVISLAB.NS", D(2024, 9, 29)), ("HEROMOTOCO.NS", D(2025, 9, 29)),
                     ("INDUSINDBK.NS", D(2025, 9, 29))]:
         row = intervals[(intervals["ticker"] == t) & intervals["effective_to"].notna()]
-        assert list(row["effective_to"]) == [last], t
+        assert row["effective_to"].max() == last, t  # BPCL / Britannia / Hero also had earlier stints
     # the continuing Tata Motors company never left; the CV arm was a temporary member
     assert "TMPV.NS" in im.members_as_of(intervals, D(2025, 11, 17))
     assert "TMCV.NS" in im.members_as_of(intervals, D(2025, 11, 14))
@@ -220,7 +220,67 @@ def test_pre_2019_changes_match_the_releases(intervals):
     before, on = _on(intervals, D(2013, 9, 26)), _on(intervals, D(2013, 9, 27))
     assert "RELINFRA.NS" in before and "WIPRO.NS" not in before and len(before) == 50
     assert "WIPRO.NS" in on and "RELINFRA.NS" not in on and len(on) == 50
-    assert im.is_complete(D(2013, 9, 27)) and not im.is_complete(D(2013, 9, 26))
+    assert im.is_complete(D(2013, 9, 27)) and im.is_complete(D(2013, 9, 26))
+
+
+def test_pre_2013_changes_match_the_releases(intervals):
+    """Members the day before and on the day of a change, as the press release lists it (task 440).
+
+    ind_prs02091998.pdf (S&P CNX Nifty, effective 1998-10-07, the oldest release in the archive and
+    the start of the chain): out BPCL, ASHOKLEY, INFOGULF, ANDRAVALLY, THERMAX, MRPL, PONDS; in
+    INFOSYSTCH (INFY), NIIT, BANKINDIA, SMITHKBECH (GSKCONS), HEROHONDA (HEROMOTOCO), P&G (PGHH), CIPLA.
+    ind_prs26022008.pdf + ind_prs31012008_2.pdf (effective 2008-03-14): out Bajaj Auto and
+    GlaxoSmithKline Pharmaceuticals; in Power Grid and DLF.
+    ind_prs14122001.pdf (effective 2002-01-17 and 2002-01-25, after the Cadbury decision was revised):
+    out HCL Infosystems, Kochi Refineries, then Reckitt & Benckiser; in Sun Pharma, Wipro, then ICICI Bank.
+    """
+    assert im.COMPLETE_FROM == D(1998, 10, 7) and im.HISTORY_START == D(1998, 9, 1)
+    out_1998 = {"BPCL.NS", "ASHOKLEY.NS", "INFOGULF.NS", "ANDRAVALLY.NS", "THERMAX.NS", "MRPL.NS", "PONDS.NS"}
+    in_1998 = {"INFY.NS", "NIIT.NS", "BANKINDIA.NS", "GSKCONS.NS", "HEROMOTOCO.NS", "PGHH.NS", "CIPLA.NS"}
+    before, on = _on(intervals, D(1998, 10, 6)), _on(intervals, D(1998, 10, 7))
+    assert out_1998 <= before and not in_1998 & before and len(before) == 50
+    assert in_1998 <= on and not out_1998 & on and len(on) == 50
+    assert not im.is_complete(D(1998, 10, 6)) and im.is_complete(D(1998, 10, 7))
+
+    before, on = _on(intervals, D(2008, 3, 13)), _on(intervals, D(2008, 3, 14))
+    assert {"BAJAJ-AUTO.NS", "GLAXO.NS"} <= before and not {"POWERGRID.NS", "DLF.NS"} & before
+    assert {"POWERGRID.NS", "DLF.NS"} <= on and not {"BAJAJ-AUTO.NS", "GLAXO.NS"} & on
+    assert len(before) == len(on) == 50
+
+    assert {"HCL-INSYS.NS", "KOCHIREFIN.NS", "RECKITTBEN.NS"} <= _on(intervals, D(2002, 1, 16))
+    mid = _on(intervals, D(2002, 1, 17))     # first change in, the Reckitt swap not yet
+    assert {"SUNPHARMA.NS", "WIPRO.NS", "RECKITTBEN.NS"} <= mid and not {"HCL-INSYS.NS", "KOCHIREFIN.NS", "ICICIBANK.NS"} & mid
+    last = _on(intervals, D(2002, 1, 25))
+    assert "ICICIBANK.NS" in last and "RECKITTBEN.NS" not in last and len(last) == 50
+
+    # a company that came back: Reliance Capital left in 1999 and joined again in 2009
+    assert "RELCAPITAL.NS" in _on(intervals, D(1999, 5, 25)) and "RELCAPITAL.NS" not in _on(intervals, D(1999, 5, 26))
+    assert "RELCAPITAL.NS" not in _on(intervals, D(2009, 1, 9)) and "RELCAPITAL.NS" in _on(intervals, D(2009, 1, 12))
+    # Sesa Goa / Vedanta is one ticker through the 2010 add and the 2016 removal
+    assert "VEDL.NS" not in _on(intervals, D(2010, 9, 30)) and "VEDL.NS" in _on(intervals, D(2010, 10, 1))
+    assert "VEDL.NS" in _on(intervals, D(2016, 3, 31)) and "VEDL.NS" not in _on(intervals, D(2016, 4, 1))
+
+
+def test_members_as_of_pre_2013_uses_only_changes_up_to_d(changes):
+    """Truncation: members_as_of(d) equals a forward replay of the changes dated <= d (pre-2013 part).
+
+    Probed on both sides of every change before the 2013-08-27 release, from 1998 on. A change dated
+    after d (e.g. the 2003-08-04 Nestle/SAIL swap, the 2013-04-01 swap) never shows up on d.
+    """
+    iv = im.nifty50_intervals()
+    initial = im.members_as_of(iv, im.HISTORY_START)
+    pre = changes[changes["effective_date"] < D(2013, 9, 27)]
+    assert len(pre) > 100
+    probes = {im.HISTORY_START, D(2013, 9, 26)}
+    for d in set(pre["effective_date"]):
+        probes |= {d - pd.Timedelta(days=1).to_pytimedelta(), d}
+    for d in sorted(probes):
+        state = set(initial)
+        for c in changes[changes["effective_date"] <= d].sort_values("effective_date", kind="stable").itertuples():
+            state.add(c.ticker) if c.action == "add" else state.remove(c.ticker)
+        assert im.members_as_of(iv, d) == state, d
+    assert "SAIL.NS" not in im.members_as_of(iv, D(2003, 8, 3)) and "SAIL.NS" in im.members_as_of(iv, D(2003, 8, 4))
+    assert "NESTLEIND.NS" in im.members_as_of(iv, D(2003, 8, 3)) and "NESTLEIND.NS" not in im.members_as_of(iv, D(2003, 8, 4))
 
 
 def test_members_as_of_pre_2019_uses_only_changes_up_to_d(changes):
@@ -277,6 +337,14 @@ def test_temporary_members_are_flagged_in_the_csv(changes):
     flagged = changes[changes["note"].str.startswith("temporary")]
     assert set(flagged["ticker"]) == {"JIOFIN.NS", "ITCHOTELS.NS", "TMCV.NS", "KWIL.NS", "TATAMTRDVR.NS"}
     assert set(flagged["action"]) == {"add", "remove"}
+
+
+def test_every_source_is_a_press_release_and_symbols_are_flagged(changes):
+    """Rows added in task 440: official source, and a name-only symbol is never left unflagged."""
+    old = changes[changes["effective_date"] < D(2013, 9, 27)]
+    assert old["source"].str.match(r"^https://www\.niftyindices\.com/Press_Release/ind_prs\d{8}(_\d)?\.pdf$").all()
+    assert (old["note"].str.strip() != "").sum() > 50
+    assert not (old["note"].str.contains("assumed") & ~old["note"].str.contains("not verified")).any()
 
 
 def test_only_complete_stints_start_after_the_first_change(intervals):

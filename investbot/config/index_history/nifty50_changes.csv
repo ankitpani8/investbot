@@ -1,4 +1,128 @@
 effective_date,action,ticker,name,source,note
+1998-10-07,remove,BPCL.NS,Bharat Petroleum,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,
+1998-10-07,remove,ASHOKLEY.NS,Ashok Leyland,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,remove,INFOGULF.NS,Indo Gulf Fertilisers & Chemicals,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,remove,ANDRAVALLY.NS,Andhra Valley Power Supply,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,remove,THERMAX.NS,Thermax,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,remove,MRPL.NS,Mangalore Refinery and Petrochemicals,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,remove,PONDS.NS,Ponds India,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,add,INFY.NS,Infosys Technologies,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol INFOSYSTCH; treated as INFY.NS (Infosys): the reverse walk needs it
+1998-10-07,add,NIIT.NS,NIIT,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,add,BANKINDIA.NS,Bank of India,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol; current Yahoo symbol not verified
+1998-10-07,add,GSKCONS.NS,Smithkline Beecham Consumer Healthcare,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol SMITHKBECH; treated as GSKCONS.NS (same company as the 2004 GlaxoSmithKline Consumer Healthcare removal): the reverse walk needs it
+1998-10-07,add,HEROMOTOCO.NS,Hero Honda Motors,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,release symbol HEROHONDA; treated as HEROMOTOCO.NS (Hero MotoCorp): the reverse walk needs it
+1998-10-07,add,PGHH.NS,Procter & Gamble India,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,"release symbol P&G, name Proctor & Gamble India Ltd.; treated as PGHH (the 2002 removal names Proctor & Gamble Hygiene Healthcare Ltd.): the reverse walk needs it"
+1998-10-07,add,CIPLA.NS,Cipla,https://www.niftyindices.com/Press_Release/ind_prs02091998.pdf,
+1999-05-26,remove,ARVIND.NS,Arvind Mills,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,release symbol; current Yahoo symbol not verified
+1999-05-26,remove,GESHIP.NS,Great Eastern Shipping,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,release symbol; current Yahoo symbol not verified
+1999-05-26,remove,RELCAPITAL.NS,Reliance Capital,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,release symbol; current Yahoo symbol not verified
+1999-05-26,add,DRREDDY.NS,Dr. Reddy's Laboratories,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,
+1999-05-26,add,NOVARTIND.NS,Novartis India,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+1999-05-26,add,RECKITTBEN.NS,Reckitt & Colman,https://www.niftyindices.com/Press_Release/ind_prs19041999.pdf,"release name Reckitt & Colman Ltd., same company as Reckitt & Benckiser (India) in the 2002 removal; symbol not read in a release, assumed; Yahoo symbol not verified"
+1999-09-08,remove,IFCI.NS,Industrial Finance Corporation of India,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,release symbol; current Yahoo symbol not verified
+1999-09-08,remove,INDRAYON.NS,Indian Rayon,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+1999-09-08,add,SATYAMCOMP.NS,Satyam Computer Services,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,release symbol; current Yahoo symbol not verified
+1999-09-08,add,BRITANNIA.NS,Britannia Industries,https://www.niftyindices.com/Press_Release/ind_prs03081999.pdf,
+2000-05-10,remove,TVSSUZUKI.NS,TVS Suzuki,https://www.niftyindices.com/Press_Release/ind_prs26042000.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2000-05-10,add,DABUR.NS,Dabur India,https://www.niftyindices.com/Press_Release/ind_prs26042000.pdf,release symbol; current Yahoo symbol not verified
+2000-05-24,remove,IDBI.NS,Industrial Development Bank of India,https://www.niftyindices.com/Press_Release/ind_prs24042000.pdf,release symbol; current Yahoo symbol not verified
+2000-05-24,remove,EIHOTEL.NS,EIH,https://www.niftyindices.com/Press_Release/ind_prs24042000.pdf,release symbol; current Yahoo symbol not verified
+2000-05-24,add,ZEEL.NS,Zee Telefilms,https://www.niftyindices.com/Press_Release/ind_prs24042000.pdf,"release name Zee Telefilms Ltd., symbol not read; treated as ZEEL (Zee Entertainment, in the 2009 removal): the reverse walk needs it"
+2000-05-24,add,HCL-INSYS.NS,HCL Infosystems,https://www.niftyindices.com/Press_Release/ind_prs24042000.pdf,release symbol; current Yahoo symbol not verified
+2000-09-01,remove,BANKINDIA.NS,Bank of India,https://www.niftyindices.com/Press_Release/ind_prs20072000.pdf,release symbol; current Yahoo symbol not verified
+2000-09-01,add,DIGITALGLOBAL.NS,Digital Equipment (India),https://www.niftyindices.com/Press_Release/ind_prs20072000.pdf,"release name Digital Equipment (India) Ltd., renamed Digital GlobalSoft (2004 removal); symbol not read in a release, assumed; Yahoo symbol not verified"
+2002-01-17,remove,HCL-INSYS.NS,HCL Infosystems,https://www.niftyindices.com/Press_Release/ind_prs14122001.pdf,release symbol; current Yahoo symbol not verified
+2002-01-17,remove,KOCHIREFIN.NS,Kochi Refineries,https://www.niftyindices.com/Press_Release/ind_prs14122001.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2002-01-17,add,SUNPHARMA.NS,Sun Pharmaceutical Industries,https://www.niftyindices.com/Press_Release/ind_prs14122001.pdf,
+2002-01-17,add,WIPRO.NS,Wipro,https://www.niftyindices.com/Press_Release/ind_prs14122001.pdf,
+2002-01-25,remove,RECKITTBEN.NS,Reckitt & Benckiser (India),https://www.niftyindices.com/Press_Release/ind_prs14122001.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2002-01-25,add,ICICIBANK.NS,ICICI Bank,https://www.niftyindices.com/Press_Release/ind_prs14122001.pdf,
+2002-05-31,remove,ICICI.NS,ICICI,https://www.niftyindices.com/Press_Release/ind_prs16052002.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2002-05-31,add,TATACOMM.NS,Videsh Sanchar Nigam,https://www.niftyindices.com/Press_Release/ind_prs16052002.pdf,"release name Videsh Sanchar Nigam Ltd.; treated as TATACOMM (Tata Communications, in the 2009 removal): the reverse walk needs it, symbol not read for VSNL"
+2002-10-10,remove,RPL.NS,Reliance Petroleum,https://www.niftyindices.com/Press_Release/ind_prs25092002.pdf,"the original Reliance Petroleum Ltd. (merged into Reliance Industries 2002), not the 2007-2009 RPETRO; symbol not read in a release, assumed; Yahoo symbol not verified"
+2002-10-10,add,SCI.NS,Shipping Corporation of India,https://www.niftyindices.com/Press_Release/ind_prs25092002.pdf,release symbol; current Yahoo symbol not verified
+2002-10-28,remove,ASIANPAINT.NS,Asian Paints,https://www.niftyindices.com/Press_Release/ind_prs16092002.pdf,
+2002-10-28,remove,PGHH.NS,Procter & Gamble Hygiene & Health Care,https://www.niftyindices.com/Press_Release/ind_prs16092002.pdf,release symbol; current Yahoo symbol not verified
+2002-10-28,add,HCLTECH.NS,HCL Technologies,https://www.niftyindices.com/Press_Release/ind_prs16092002.pdf,
+2002-10-28,add,BPCL.NS,Bharat Petroleum,https://www.niftyindices.com/Press_Release/ind_prs16092002.pdf,
+2003-05-02,remove,CASTROL.NS,Castrol India,https://www.niftyindices.com/Press_Release/ind_prs13032003.pdf,release symbol; current Yahoo symbol not verified
+2003-05-02,remove,NOVARTIND.NS,Novartis India,https://www.niftyindices.com/Press_Release/ind_prs13032003.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2003-05-02,add,NATIONALUM.NS,National Aluminium,https://www.niftyindices.com/Press_Release/ind_prs13032003.pdf,release symbol; current Yahoo symbol not verified
+2003-05-02,add,GAIL.NS,GAIL (India),https://www.niftyindices.com/Press_Release/ind_prs13032003.pdf,
+2003-08-04,remove,NESTLEIND.NS,Nestle India,https://www.niftyindices.com/Press_Release/ind_prs18062003.pdf,
+2003-08-04,add,SAIL.NS,Steel Authority of India,https://www.niftyindices.com/Press_Release/ind_prs18062003.pdf,release symbol; current Yahoo symbol not verified
+2004-03-01,remove,GSKCONS.NS,GlaxoSmithKline Consumer Healthcare,https://www.niftyindices.com/Press_Release/ind_prs16012004.pdf,release symbol; current Yahoo symbol not verified
+2004-03-01,remove,NIIT.NS,NIIT,https://www.niftyindices.com/Press_Release/ind_prs16012004.pdf,release symbol; current Yahoo symbol not verified
+2004-03-01,add,BHARTIARTL.NS,Bharti Tele-Ventures,https://www.niftyindices.com/Press_Release/ind_prs16012004.pdf,
+2004-03-01,add,MARUTI.NS,Maruti Udyog,https://www.niftyindices.com/Press_Release/ind_prs16012004.pdf,
+2004-04-12,remove,DIGITALGLOBAL.NS,Digital GlobalSoft,https://www.niftyindices.com/Press_Release/ind_prs26032004.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2004-04-12,add,ONGC.NS,Oil & Natural Gas Corporation,https://www.niftyindices.com/Press_Release/ind_prs26032004.pdf,
+2004-05-24,remove,LT.NS,Larsen & Toubro,https://www.niftyindices.com/Press_Release/ind_prs19052004.pdf,
+2004-05-24,add,PNB.NS,Punjab National Bank,https://www.niftyindices.com/Press_Release/ind_prs19052004.pdf,
+2004-12-10,remove,BRITANNIA.NS,Britannia Industries,https://www.niftyindices.com/Press_Release/ind_prs29102004.pdf,
+2004-12-10,add,LT.NS,Larsen & Toubro,https://www.niftyindices.com/Press_Release/ind_prs29102004.pdf,
+2005-02-25,remove,INDHOTEL.NS,Indian Hotels,https://www.niftyindices.com/Press_Release/ind_prs12012005.pdf,release symbol; current Yahoo symbol not verified
+2005-02-25,add,TCS.NS,Tata Consultancy Services,https://www.niftyindices.com/Press_Release/ind_prs12012005.pdf,
+2005-09-26,remove,COLPAL.NS,Colgate Palmolive (India),https://www.niftyindices.com/Press_Release/ind_prs23082005.pdf,release symbol; current Yahoo symbol not verified
+2005-09-26,add,JETAIRWAYS.NS,Jet Airways (India),https://www.niftyindices.com/Press_Release/ind_prs23082005.pdf,release symbol; current Yahoo symbol not verified
+2006-06-27,remove,SCI.NS,Shipping Corporation of India,https://www.niftyindices.com/Press_Release/ind_prs21062006.pdf,release symbol; current Yahoo symbol not verified
+2006-06-27,remove,TATACHEM.NS,Tata Chemicals,https://www.niftyindices.com/Press_Release/ind_prs21062006.pdf,release symbol; current Yahoo symbol not verified
+2006-06-27,add,SUZLON.NS,Suzlon Energy,https://www.niftyindices.com/Press_Release/ind_prs21062006.pdf,release symbol; current Yahoo symbol not verified
+2006-06-27,add,SIEMENS.NS,Siemens,https://www.niftyindices.com/Press_Release/ind_prs21062006.pdf,release symbol; current Yahoo symbol not verified
+2006-09-01,remove,TATATEA.NS,Tata Tea,https://www.niftyindices.com/Press_Release/ind_prs20072006_1.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2006-09-01,add,RCOM.NS,Reliance Communications,https://www.niftyindices.com/Press_Release/ind_prs20072006_1.pdf,release symbol; current Yahoo symbol not verified
+2007-04-04,remove,ORIENTBANK.NS,Oriental Bank of Commerce,https://www.niftyindices.com/Press_Release/ind_prs20022007.pdf,release symbol; current Yahoo symbol not verified
+2007-04-04,remove,JETAIRWAYS.NS,Jet Airways (India),https://www.niftyindices.com/Press_Release/ind_prs20022007.pdf,release symbol; current Yahoo symbol not verified
+2007-04-04,add,STER.NS,Sterlite Industries (India),https://www.niftyindices.com/Press_Release/ind_prs20022007.pdf,release symbol; current Yahoo symbol not verified
+2007-04-04,add,RPETRO.NS,Reliance Petroleum,https://www.niftyindices.com/Press_Release/ind_prs20022007.pdf,"the second Reliance Petroleum Ltd. (merged into Reliance Industries 2009), not the 2002 RPL; symbol not read in a release, assumed; Yahoo symbol not verified"
+2007-09-24,remove,DABUR.NS,Dabur India,https://www.niftyindices.com/Press_Release/ind_prs10082007.pdf,release symbol; current Yahoo symbol not verified
+2007-09-24,add,NTPC.NS,NTPC,https://www.niftyindices.com/Press_Release/ind_prs10082007.pdf,
+2007-10-05,remove,IPCL.NS,Indian Petrochemicals,https://www.niftyindices.com/Press_Release/ind_prs12092007.pdf,"release gives name only; symbol not read in a release, assumed; current Yahoo symbol not verified"
+2007-10-05,add,UNITECH.NS,Unitech,https://www.niftyindices.com/Press_Release/ind_prs12092007.pdf,release symbol; current Yahoo symbol not verified
+2007-12-12,remove,MTNL.NS,Mahanagar Telephone Nigam,https://www.niftyindices.com/Press_Release/ind_prs30102007.pdf,release symbol; current Yahoo symbol not verified
+2007-12-12,remove,HINDPETRO.NS,Hindustan Petroleum,https://www.niftyindices.com/Press_Release/ind_prs30102007.pdf,
+2007-12-12,add,IDEA.NS,Idea Cellular,https://www.niftyindices.com/Press_Release/ind_prs30102007.pdf,
+2007-12-12,add,CAIRN.NS,Cairn India,https://www.niftyindices.com/Press_Release/ind_prs30102007.pdf,
+2008-03-14,remove,BAJAJ-AUTO.NS,Bajaj Auto,https://www.niftyindices.com/Press_Release/ind_prs26022008.pdf,
+2008-03-14,remove,GLAXO.NS,GlaxoSmithKline Pharmaceuticals,https://www.niftyindices.com/Press_Release/ind_prs31012008_2.pdf,release symbol; current Yahoo symbol not verified
+2008-03-14,add,POWERGRID.NS,Power Grid Corporation of India,https://www.niftyindices.com/Press_Release/ind_prs26022008.pdf,
+2008-03-14,add,DLF.NS,DLF,https://www.niftyindices.com/Press_Release/ind_prs31012008_2.pdf,
+2008-09-10,remove,DRREDDY.NS,Dr. Reddy's Laboratories,https://www.niftyindices.com/Press_Release/ind_prs29072008.pdf,
+2008-09-10,add,RPOWER.NS,Reliance Power,https://www.niftyindices.com/Press_Release/ind_prs29072008.pdf,release symbol; current Yahoo symbol not verified
+2009-01-12,remove,SATYAMCOMP.NS,Satyam Computer Services,https://www.niftyindices.com/Press_Release/ind_prs07012009.pdf,release symbol; current Yahoo symbol not verified
+2009-01-12,add,RELCAPITAL.NS,Reliance Capital,https://www.niftyindices.com/Press_Release/ind_prs07012009.pdf,release symbol; current Yahoo symbol not verified
+2009-03-27,remove,ZEEL.NS,Zee Entertainment Enterprises,https://www.niftyindices.com/Press_Release/ind_prs10022009.pdf,
+2009-03-27,add,AXISBANK.NS,Axis Bank,https://www.niftyindices.com/Press_Release/ind_prs10022009.pdf,
+2009-06-17,remove,RPETRO.NS,Reliance Petroleum,https://www.niftyindices.com/Press_Release/ind_prs19052009.pdf,"the second Reliance Petroleum Ltd. (merged into Reliance Industries 2009), not the 2002 RPL; symbol not read in a release, assumed; Yahoo symbol not verified"
+2009-06-17,add,JINDALSTEL.NS,Jindal Steel & Power,https://www.niftyindices.com/Press_Release/ind_prs19052009.pdf,
+2009-10-22,remove,NATIONALUM.NS,National Aluminium,https://www.niftyindices.com/Press_Release/ind_prs09092009.pdf,release symbol; current Yahoo symbol not verified
+2009-10-22,remove,TATACOMM.NS,Tata Communications,https://www.niftyindices.com/Press_Release/ind_prs09092009.pdf,release symbol; current Yahoo symbol not verified
+2009-10-22,add,JPASSOCIAT.NS,Jaiprakash Associates,https://www.niftyindices.com/Press_Release/ind_prs09092009.pdf,
+2009-10-22,add,IDFC.NS,IDFC,https://www.niftyindices.com/Press_Release/ind_prs09092009.pdf,
+2010-04-08,remove,GRASIM.NS,Grasim Industries,https://www.niftyindices.com/Press_Release/ind_prs24022010.pdf,
+2010-04-08,add,KOTAKBANK.NS,Kotak Mahindra Bank,https://www.niftyindices.com/Press_Release/ind_prs24022010.pdf,
+2010-10-01,remove,ABB.NS,ABB,https://www.niftyindices.com/Press_Release/ind_prs18082010.pdf,release symbol; current Yahoo symbol not verified
+2010-10-01,remove,IDEA.NS,Idea Cellular,https://www.niftyindices.com/Press_Release/ind_prs18082010.pdf,
+2010-10-01,remove,UNITECH.NS,Unitech,https://www.niftyindices.com/Press_Release/ind_prs18082010.pdf,release symbol; current Yahoo symbol not verified
+2010-10-01,add,BAJAJ-AUTO.NS,Bajaj Auto,https://www.niftyindices.com/Press_Release/ind_prs18082010.pdf,
+2010-10-01,add,DRREDDY.NS,Dr. Reddy's Laboratories,https://www.niftyindices.com/Press_Release/ind_prs18082010.pdf,
+2010-10-01,add,VEDL.NS,Sesa Goa,https://www.niftyindices.com/Press_Release/ind_prs18082010.pdf,"release name Sesa Goa Ltd.; treated as VEDL.NS (Sesa Sterlite, Vedanta): the reverse walk needs it, no release read states the rename"
+2011-03-25,remove,SUZLON.NS,Suzlon Energy,https://www.niftyindices.com/Press_Release/ind_prs10022011.pdf,release symbol; current Yahoo symbol not verified
+2011-03-25,add,GRASIM.NS,Grasim Industries,https://www.niftyindices.com/Press_Release/ind_prs10022011.pdf,
+2011-10-10,remove,RELCAPITAL.NS,Reliance Capital,https://www.niftyindices.com/Press_Release/ind_prs25082011.pdf,release symbol; current Yahoo symbol not verified
+2011-10-10,add,COALINDIA.NS,Coal India,https://www.niftyindices.com/Press_Release/ind_prs25082011.pdf,
+2012-04-27,remove,RCOM.NS,Reliance Communications,https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf,release symbol; current Yahoo symbol not verified
+2012-04-27,remove,RPOWER.NS,Reliance Power,https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf,release symbol; current Yahoo symbol not verified
+2012-04-27,add,ASIANPAINT.NS,Asian Paints,https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf,
+2012-04-27,add,BANKBARODA.NS,Bank of Baroda,https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf,
+2012-09-28,remove,SAIL.NS,Steel Authority of India,https://www.niftyindices.com/Press_Release/ind_prs16082012.pdf,release symbol; current Yahoo symbol not verified
+2012-09-28,remove,STER.NS,Sterlite Industries (India),https://www.niftyindices.com/Press_Release/ind_prs16082012.pdf,release symbol; current Yahoo symbol not verified
+2012-09-28,add,LUPIN.NS,Lupin,https://www.niftyindices.com/Press_Release/ind_prs16082012.pdf,
+2012-09-28,add,ULTRACEMCO.NS,UltraTech Cement,https://www.niftyindices.com/Press_Release/ind_prs16082012.pdf,
+2013-04-01,remove,SIEMENS.NS,Siemens,https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf,release symbol; current Yahoo symbol not verified
+2013-04-01,remove,WIPRO.NS,Wipro,https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf,
+2013-04-01,add,INDUSINDBK.NS,IndusInd Bank,https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf,
+2013-04-01,add,NMDC.NS,NMDC,https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf,
 2013-09-27,remove,RELINFRA.NS,Reliance Infrastructure,https://www.niftyindices.com/Press_Release/ind_prs27082013.pdf,
 2013-09-27,add,WIPRO.NS,Wipro,https://www.niftyindices.com/Press_Release/ind_prs27082013.pdf,
 2014-03-28,remove,JPASSOCIAT.NS,Jaiprakash Associates,https://www.niftyindices.com/Press_Release/ind_prs27022014.pdf,
