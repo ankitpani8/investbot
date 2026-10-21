@@ -68,7 +68,7 @@ def regime_params(regime_name: str) -> TaxRegimeParams:
 def regime_for(asset_class_name: str, on_date: date) -> TaxRegimeParams:
     """The regime of ``asset_class_name`` in force on ``on_date`` (both bounds inclusive).
 
-    Raises ValueError if no row covers the date (e.g. equity before 2018-04-01, crypto
+    Raises ValueError if no row covers the date (e.g. equity before 2004-10-01, crypto
     before 2022-04-01) or if two rows overlap.
     """
     hits = []
@@ -84,6 +84,15 @@ def regime_for(asset_class_name: str, on_date: date) -> TaxRegimeParams:
     if len(hits) > 1:
         raise ValueError(f"overlapping {asset_class_name!r} tax regimes on {on_date}: {hits}")
     return regime_params(hits[0])
+
+
+def ltcg_exempt(regime: TaxRegimeParams) -> bool:
+    """True if long-term gains are exempt under the regime (s.10(38), 2004-10-01 to 2018-03-31).
+
+    An exempt LTCG is never taxed, never absorbs a loss, and an LTCL on it can be neither
+    set off nor carried forward (``ltcl_offsets == "none"``).
+    """
+    return regime.ltcg_rate == 0.0 and regime.ltcl_offsets == "none"
 
 
 def fiscal_year(d: date) -> str:

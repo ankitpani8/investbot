@@ -137,7 +137,7 @@ def test_regime_for_raises_when_no_row_covers_date():
     from investbot.trading.tax_rules import regime_for
 
     with pytest.raises(ValueError):
-        regime_for("equity", date(2018, 3, 31))
+        regime_for("equity", date(2004, 9, 30))
     with pytest.raises(ValueError):
         regime_for("crypto", date(2022, 3, 31))
     with pytest.raises(ValueError):
@@ -150,3 +150,72 @@ def test_pre_2024_regime_matches_current_except_rates_exemption_dates():
     assert diff == {"regime_name", "stcg_rate", "ltcg_rate", "ltcg_annual_exemption",
                     "effective_from", "effective_to"}
     assert pre.effective_to == date(2024, 7, 22)
+
+
+# --- listed equity, STT era (2004-10-01 to 2018-03-31) ---
+
+EQUITY_ROWS = [
+    ("IN_EQUITY_LISTED_2004_10_01", date(2004, 10, 1), 0.10, 0.00075),
+    ("IN_EQUITY_LISTED_2005_06_01", date(2005, 6, 1), 0.10, 0.001),
+    ("IN_EQUITY_LISTED_2006_06_01", date(2006, 6, 1), 0.10, 0.00125),
+    ("IN_EQUITY_LISTED_2008_04_01", date(2008, 4, 1), 0.15, 0.00125),
+    ("IN_EQUITY_LISTED_2012_07_01", date(2012, 7, 1), 0.15, 0.001),
+    ("IN_EQUITY_LISTED_PRE_2024_07_23", date(2018, 4, 1), 0.15, 0.001),
+    ("IN_EQUITY_LISTED", date(2024, 7, 23), 0.20, 0.001),
+]
+
+
+@pytest.mark.parametrize("name,start,stcg,stt", EQUITY_ROWS)
+def test_equity_regime_rows_on_both_sides_of_each_boundary(name, start, stcg, stt):
+    from datetime import timedelta
+    from investbot.trading.tax_rules import regime_for
+
+    r = regime_for("equity", start)
+    assert r.regime_name == name
+    assert (r.stcg_rate, r.stt_buy_rate, r.stt_sell_rate) == (stcg, stt, stt)
+    assert regime_for("equity", start + timedelta(days=40)).regime_name == name
+    if start > date(2004, 10, 1):
+        assert regime_for("equity", start - timedelta(days=1)).regime_name != name
+    else:
+        with pytest.raises(ValueError):
+            regime_for("equity", start - timedelta(days=1))
+
+
+def test_equity_rows_cover_every_day_without_overlap_or_gap():
+    from datetime import timedelta
+    from investbot.trading.tax_rules import regime_for
+
+    d, seen = date(2004, 10, 1), []
+    while d <= date.today():
+        name = regime_for("equity", d).regime_name  # raises on a gap or an overlap
+        if not seen or seen[-1] != name:
+            seen.append(name)
+        d += timedelta(days=1)
+    assert seen == [row[0] for row in EQUITY_ROWS]  # each row is one contiguous run, in order
+
+
+def test_equity_rows_are_contiguous_in_config():
+    rows = sorted(
+        (e for e in TAX_REGIMES if e["asset_class_name"] == "equity"),
+        key=lambda e: e["effective_from"],
+    )
+    for a, b in zip(rows, rows[1:]):
+        nxt = date.fromisoformat(a["effective_to"]).toordinal() + 1
+        assert nxt == date.fromisoformat(b["effective_from"]).toordinal()
+    assert rows[-1]["effective_to"] is None
+
+
+def test_ltcg_exempt_only_for_pre_2018_rows():
+    from investbot.trading.tax_rules import ltcg_exempt
+
+    for name, start, *_ in EQUITY_ROWS:
+        assert ltcg_exempt(regime_params(name)) is (start < date(2018, 4, 1)), name
+    assert ltcg_exempt(CRYPTO) is False  # no LTCG class, rate is None
+
+
+def test_exempt_rows_encoding():
+    for name, start, *_ in EQUITY_ROWS[:5]:
+        r = regime_params(name)
+        assert (r.ltcg_rate, r.ltcg_annual_exemption, r.ltcl_offsets) == (0.0, 0, "none")
+        assert (r.ltcg_holding_days, r.loss_carryforward_years, r.wash_sale_days) == (365, 8, 0)
+        assert r.stcl_offsets == "stcg_and_ltcg"

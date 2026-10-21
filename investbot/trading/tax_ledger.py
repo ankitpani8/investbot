@@ -14,19 +14,28 @@ Equity rules, applied in this order (Income-tax Act ss.70-74, 111A, 112A):
 3. The annual LTCG exemption (the regime in force on the FY's last day, 31 March) applies
    to the LTCG left after set-off.
 4. Each gain is taxed at the rate of the regime in force on its ``sell_date``.
-5. tax = sum(bucket x rate), then x (1 + surcharge_rate) x (1 + cess_rate).
+5. tax = sum(bucket x rate), then x (1 + surcharge_rate) x (1 + cess_rate). The cess
+   defaults to the rate of the FY (``cess_rate_for``: 2% / 3% / 4%).
 6. Unabsorbed current-year losses join the carry-forward under this FY's key.
 
 Two rate regimes in one FY (FY 2024-25, rates changed on 23 July 2024): gains form one
 bucket per (term, rate). Losses and the exemption are applied to the **higher-rate
 bucket first**, which minimises tax (taxpayer-optimal). See docs/DECISIONS_PENDING.md.
 
+Exempt LTCG (s.10(38), sales from 2004-10-01 to 2018-03-31, ``tax_rules.ltcg_exempt`` of
+the sell-date regime): an LTCG or LTCL realisation is counted in ``realized_ltcg`` /
+``realized_ltcl`` but forms no bucket, absorbs no loss (current-year or brought-forward
+STCL is never set off against it), uses no exemption, and an exempt LTCL is not carried
+forward. STCG and STCL in those years behave as usual (STCL offsets STCG only).
+
 Crypto (``term == "FLAT"``, Section 115BBH): the flat rate applies to the sum of the
 *positive* gains only. Losses are ignored: never offset (not even against other crypto
 gains) and never carried forward. TDS is reported, not netted against the tax.
 
-Not modelled (BACKLOG): 31-Jan-2018 grandfathering, basic-exemption-limit adjustment of
-resident individuals, the s.87A rebate, slab-rate assets.
+Not modelled (BACKLOG): sales before 2004-10-01 (they raise ValueError: STCG at slab
+rates and taxable LTCG with indexation), 31-Jan-2018 grandfathering,
+basic-exemption-limit adjustment of resident individuals, the s.87A rebate, slab-rate
+assets, the pre-2018 STT-not-paid case (LTCG taxable under s.112).
 """
 
 from __future__ import annotations
@@ -39,7 +48,12 @@ from typing import Iterable
 from investbot.trading import tax_rules
 from investbot.trading.lot_tracker import Realisation
 
-CESS_RATE = 0.04  # health and education cess on the tax (plus surcharge)
+CESS_RATE = 0.04  # health and education cess on the tax (plus surcharge), from FY 2018-19
+
+# First FY (start year) of each cess rate, oldest first. Sources: Finance (No. 2) Act 2004
+# (education cess 2%, FY 2004-05), Finance Act 2007 (+1% secondary and higher education
+# cess, 3% from FY 2007-08), Finance Act 2018 (4% health and education cess from FY 2018-19).
+_CESS_HISTORY = ((2004, 0.02), (2007, 0.03), (2018, CESS_RATE))
 
 _EPS = 1e-9
 
@@ -106,6 +120,19 @@ def _fy_start_year(label: str) -> int:
         raise ValueError(f"bad fiscal year label {label!r}, expected e.g. '2024-25'") from None
 
 
+def cess_rate_for(fiscal_year: str) -> float:
+    """Education / health and education cess on income tax for ``fiscal_year`` ('2010-11').
+
+    0.0 before FY 2004-05, when no cess existed.
+    """
+    start = _fy_start_year(fiscal_year)
+    rate = 0.0
+    for first_year, r in _CESS_HISTORY:
+        if start >= first_year:
+            rate = r
+    return rate
+
+
 def _fy_end(label: str) -> date:
     return date(_fy_start_year(label) + 1, 3, 31)
 
@@ -144,18 +171,21 @@ def compute_fiscal_year_tax(
     fiscal_year: str,
     carry_forward_in: CarryForward | None = None,
     *,
-    cess_rate: float = CESS_RATE,
+    cess_rate: float | None = None,
     surcharge_rate: float = 0.0,
     crypto_tds_paid: float = 0.0,
 ) -> FiscalYearTax:
     """Tax for ``fiscal_year`` ('2024-25') from the realisations sold in it.
 
+    ``cess_rate=None`` uses ``cess_rate_for(fiscal_year)``; an explicit float overrides it.
     Realisations with a ``sell_date`` outside the FY are ignored. ``carry_forward_in`` is
     what ``compute_fiscal_year_tax`` of the previous FY returned as ``carry_forward_out``;
     keys must be earlier FYs. Raises ValueError for a bad label, an unknown term, a
     carry-forward key that is not before ``fiscal_year``, or a sell date with no regime.
     """
     fy_start = _fy_start_year(fiscal_year)
+    if cess_rate is None:
+        cess_rate = cess_rate_for(fiscal_year)
     cf_in = carry_forward_in or CarryForward()
     for key in (*cf_in.stcl_by_fy, *cf_in.ltcl_by_fy):
         if _fy_start_year(key) >= fy_start:
@@ -164,6 +194,7 @@ def compute_fiscal_year_tax(
     stcg: dict[float, _Bucket] = {}
     ltcg: dict[float, _Bucket] = {}
     gross = {"STCG": 0.0, "LTCG": 0.0, "STCL": 0.0, "LTCL": 0.0}
+    exempt = {"LTCG": 0.0, "LTCL": 0.0}  # exempt-era long-term amounts: reported, never used
     crypto_gain = 0.0
     crypto_tax = 0.0
     regime_cache: dict[tuple[str, date], tax_rules.TaxRegimeParams] = {}
@@ -181,10 +212,13 @@ def compute_fiscal_year_tax(
                 crypto_gain += r.gain
                 crypto_tax += r.gain * regime("crypto", r.sell_date).flat_tax_rate
         elif r.term in ("STCG", "LTCG"):
-            if r.gain < 0:
+            reg = regime("equity", r.sell_date)
+            if r.term == "LTCG" and tax_rules.ltcg_exempt(reg):
+                # s.10(38): counted gross, never taxed, never offset, never carried forward.
+                exempt["LTCG" if r.gain > 0 else "LTCL"] += abs(r.gain)
+            elif r.gain < 0:
                 gross["STCL" if r.term == "STCG" else "LTCL"] += -r.gain
             elif r.gain > 0:
-                reg = regime("equity", r.sell_date)
                 rate = reg.stcg_rate if r.term == "STCG" else reg.ltcg_rate
                 buckets = stcg if r.term == "STCG" else ltcg
                 buckets.setdefault(rate, _Bucket(rate)).amount += r.gain
@@ -233,9 +267,9 @@ def compute_fiscal_year_tax(
     return FiscalYearTax(
         fiscal_year=fiscal_year,
         realized_stcg=gross["STCG"],
-        realized_ltcg=gross["LTCG"],
+        realized_ltcg=gross["LTCG"] + exempt["LTCG"],
         realized_stcl=gross["STCL"],
-        realized_ltcl=gross["LTCL"],
+        realized_ltcl=gross["LTCL"] + exempt["LTCL"],
         ltcg_exemption_used=exempt_used,
         ltcg_exemption_remaining=exemption - exempt_used,
         estimated_tax_liability=total,

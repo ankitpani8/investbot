@@ -204,7 +204,7 @@ def test_fy_2023_24_uses_one_lakh_exemption_and_old_rates():
 
 def test_sale_with_no_regime_raises():
     with pytest.raises(ValueError):
-        tax([R(1_000, "STCG", date(2017, 6, 1))], "2017-18")
+        tax([R(1_000, "STCG", date(2004, 9, 30))], "2004-05")  # before STT: no regime
 
 
 def test_only_realisations_in_the_fiscal_year_count():
@@ -264,3 +264,78 @@ def test_incremental_tax_uses_carry_forward_and_kwargs():
     cf = CarryForward(stcl_by_fy={"2024-25": 30_000})
     inc = incremental_tax([], [R(50_000, "STCG")], FY, cf, cess_rate=0.0)
     assert inc == pytest.approx(20_000 * 0.20)
+
+
+# --- exempt LTCG (s.10(38)) and dated cess, FY 2004-05 to 2017-18 ---
+
+def test_cess_rate_for_history():
+    from investbot.trading.tax_ledger import cess_rate_for
+
+    assert cess_rate_for("2003-04") == 0.0
+    for fy in ("2004-05", "2005-06", "2006-07"):
+        assert cess_rate_for(fy) == 0.02
+    for fy in ("2007-08", "2010-11", "2017-18"):
+        assert cess_rate_for(fy) == 0.03
+    for fy in ("2018-19", "2025-26"):
+        assert cess_rate_for(fy) == 0.04 == CESS_RATE
+    with pytest.raises(ValueError):
+        cess_rate_for("2010-2011")
+
+
+def test_exempt_ltcg_not_taxed_stcg_taxed_with_dated_cess():
+    from investbot.trading.tax_ledger import cess_rate_for
+
+    d = date(2010, 8, 1)
+    t = compute_fiscal_year_tax([R(500_000, "LTCG", d), R(100_000, "STCG", d)], "2010-11")
+    assert (t.realized_ltcg, t.realized_stcg) == (500_000, 100_000)
+    assert cess_rate_for("2010-11") == 0.03
+    assert t.estimated_tax_liability == pytest.approx(100_000 * 0.15 * 1.03)
+    assert (t.ltcg_exemption_used, t.ltcg_exemption_remaining) == (0, 0)
+    assert t.carry_forward_out == CarryForward()
+
+
+def test_explicit_cess_overrides_dated_cess():
+    d = date(2010, 8, 1)
+    t = compute_fiscal_year_tax([R(100_000, "STCG", d)], "2010-11", cess_rate=0.0)
+    assert t.estimated_tax_liability == pytest.approx(15_000)
+
+
+def test_exempt_ltcl_is_neither_offset_nor_carried_forward():
+    d = date(2015, 9, 1)
+    t = tax([R(-300_000, "LTCG", d), R(80_000, "STCG", d)], "2015-16")
+    assert t.realized_ltcl == 300_000
+    assert t.estimated_tax_liability == pytest.approx(80_000 * 0.15)  # LTCL did not reduce STCG
+    assert t.carry_forward_out == CarryForward() and t.carried_forward_ltcl == 0
+
+
+def test_stcl_not_set_off_against_exempt_ltcg_and_carried_forward():
+    d = date(2012, 10, 1)
+    t = tax([R(400_000, "LTCG", d), R(-60_000, "STCG", d)], "2012-13")
+    assert (t.realized_ltcg, t.realized_stcl) == (400_000, 60_000)
+    assert t.estimated_tax_liability == 0
+    assert t.carry_forward_out.stcl_by_fy == {"2012-13": 60_000}  # nothing absorbed it
+
+
+def test_stcl_carried_from_2016_17_usable_against_ltcg_in_2018_19():
+    loss = tax([R(-90_000, "STCG", date(2016, 12, 1))], "2016-17")
+    assert loss.carry_forward_out.stcl_by_fy == {"2016-17": 90_000}
+    t = tax([R(300_000, "LTCG", date(2018, 8, 1))], "2018-19", loss.carry_forward_out)
+    # LTCG 3L less BF STCL 90k = 2.1L; exemption 1L; 1.1L taxed at 10%.
+    assert t.ltcg_exemption_used == 100_000
+    assert t.estimated_tax_liability == pytest.approx(110_000 * 0.10)
+    assert t.carry_forward_out == CarryForward()
+
+
+def test_stcg_rate_changes_on_2008_04_01():
+    before = tax([R(100_000, "STCG", date(2008, 3, 31))], "2007-08")
+    after = tax([R(100_000, "STCG", date(2008, 4, 1))], "2008-09")
+    assert before.estimated_tax_liability == pytest.approx(10_000)
+    assert after.estimated_tax_liability == pytest.approx(15_000)
+
+
+def test_exempt_loss_in_pre_2018_fy_uses_sell_date_regime_only():
+    # FY 2017-18 sells are all exempt-era; the same gross in FY 2018-19 is taxable.
+    old = tax([R(200_000, "LTCG", date(2018, 3, 31))], "2017-18")
+    new = tax([R(200_000, "LTCG", date(2018, 4, 1))], "2018-19")
+    assert old.estimated_tax_liability == 0
+    assert new.estimated_tax_liability == pytest.approx(100_000 * 0.10)

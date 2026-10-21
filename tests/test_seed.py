@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from investbot.config.tax_regimes import TAX_REGIMES
 from investbot.config.tickers import NIFTY50_TICKERS, RETIRED_TICKERS
 from investbot.data.models import Asset, Base, Exchange
 from investbot.data.seed import run_seed
@@ -67,7 +68,9 @@ def test_seed_tax_regimes_dated_and_idempotent(session):
     run_seed(session)
     assert session.query(TaxRegime).count() == n
     rows = _equity_regimes(session)
-    assert set(rows) == {"IN_EQUITY_LISTED", "IN_EQUITY_LISTED_PRE_2024_07_23"}
+    assert set(rows) == {e["regime_name"] for e in TAX_REGIMES if e["asset_class_name"] == "equity"}
+    assert len(rows) == 7
+    assert session.query(TaxRegime).count() == len(TAX_REGIMES)  # one row per regime_name
     assert rows["IN_EQUITY_LISTED"].effective_from == date(2024, 7, 23)
     old = rows["IN_EQUITY_LISTED_PRE_2024_07_23"]
     assert (old.stcg_rate, old.ltcg_rate, old.ltcg_annual_exemption) == (0.15, 0.10, 100000)
