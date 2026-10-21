@@ -17,6 +17,9 @@ Usage:
     python main.py gaps       # Detect price data gaps
     python main.py dq         # Audit stored price rows (exit 1 if any are bad)
     python main.py dq --purge # ...and delete the bad rows (next ingest re-fetches them)
+    python main.py dq --anomalies-csv PATH
+                              # ...and write every price anomaly (report-only section, never changes
+                              # the exit code, never purged) to PATH
     python main.py score [TICKER] [--timeframe 1d|15m] [--as-of YYYY-MM-DD] [--no-cache]
                               # Technical scores, ranked (one asset in detail with TICKER)
     python main.py coverage [--index NIFTY50] [--csv PATH]
@@ -299,13 +302,52 @@ def cmd_gaps():
         session.close()
 
 
+def _print_price_anomalies(session, csv_path: str | None) -> None:
+    """The `dq` section "Price anomalies (report-only)". Never changes the exit code, never purges."""
+    import pandas as pd
+    from investbot.data.price_anomalies import (
+        ANOMALY_KINDS, audit_price_anomalies, largest_anomalies, summarise_anomalies,
+    )
+
+    anomalies = audit_price_anomalies(session)
+    print("  Price anomalies (report-only): nothing is purged or masked; `spike_reversal` uses the next bar,")
+    print("  so this is offline inspection, not a feature or a backtest mask.")
+    if not anomalies:
+        print("    none found.\n")
+    else:
+        summary = summarise_anomalies(anomalies)
+        counts = ", ".join(f"{k} {int(summary.loc['total', k])} ({int(summary.loc['tickers', k])} tickers)"
+                           for k in ANOMALY_KINDS)
+        print(f"\n  {len(anomalies)} anomaly(ies): {counts}")
+        print("\n  By year of the first bar (last rows: total, distinct tickers):")
+        print("\n".join("    " + line for line in summary.to_string().splitlines()))
+        top = largest_anomalies(anomalies, 30)
+        print(f"\n  Largest {len(top)} (returns by |log return|, then stale runs by length):")
+        for a in top:
+            span = f"{a.start}" if a.start == a.end else f"{a.start} → {a.end}"
+            what = f"close {a.value:g}" if a.kind == "stale_run" else f"log ret {a.value:+.3f}"
+            print(f"    {a.ticker:<16s} {a.kind:<15s} {span:<25s} {a.sessions:>3} bar(s)  {what}")
+        print()
+    if csv_path:
+        pd.DataFrame(
+            [(a.ticker, a.kind, a.start, a.end, a.sessions, a.value) for a in anomalies],
+            columns=["ticker", "kind", "start", "end", "sessions", "value"],
+        ).to_csv(csv_path, index=False)
+        print(f"  Price anomalies written to {csv_path}\n")
+
+
 def cmd_dq():
     """Audit stored price rows against the ingestion rules (optionally delete the bad ones) and check splits."""
     from collections import Counter, defaultdict
     from investbot.data.models import Base
     from investbot.data.quality import audit_prices, audit_splits, purge_bad_rows
 
-    purge = "--purge" in sys.argv[2:]
+    import argparse
+    parser = argparse.ArgumentParser(prog="main.py dq", add_help=False)
+    parser.add_argument("--purge", action="store_true")
+    parser.add_argument("--anomalies-csv", default=None, metavar="PATH")
+    args, _ = parser.parse_known_args(sys.argv[2:])
+    purge = args.purge
     session = SessionLocal()
     try:
         Base.metadata.create_all(session.get_bind())   # corporate_actions may be missing on an existing DB
@@ -347,6 +389,8 @@ def cmd_dq():
                 print(f"    {i.ticker:<16s} ex {i.ex_date}  factor {i.factor:g}  prev close / ex open = {i.observed_ratio:.3f}")
             print("\n  --purge does not touch these. Re-adjusting history is a human decision.\n")
             failed = True
+
+        _print_price_anomalies(session, args.anomalies_csv)     # report-only: never sets `failed`
 
         if failed:
             sys.exit(1)
