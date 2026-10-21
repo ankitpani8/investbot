@@ -81,6 +81,13 @@ Agents add open questions under **Pending**. Ankit moves them to **Decided** wit
   - **Win rate** is per lot slice (each `Realisation`), net of trading costs and before tax; the master plan does not say whether a "trade" is a round trip, a lot slice or a position. Alternative: aggregate realisations per (asset, sell date) first.
   - **Drawdown duration** is counted in trading sessions (the key is named `_days`); calendar days would need the peak and recovery dates, which `performance.drawdown_stats` does not return.
 
+- 2026-10-22 **Strategy adapter: selection and calendar conventions** (task 590-backtest-signal-weights, `investbot/backtest/strategies.py`). Chosen (conservative, each behind a parameter or a one-line change):
+  - **Cash below `min_names`**: a rebalance session with fewer than `min_names` (default `metrics.MIN_NAMES` = 10) eligible names is an all-zero (cash) row. Alternatives: hold the previous weights (skip the row), or fall back to the equal-weight universe. Switch: `min_names=1` disables it; the alternatives need a new flag.
+  - **Ties at the cutoff are all included**, so a row can hold more than `ceil(q x n)` names (integer-valued signals such as `SIG_*` tie often). Alternatives: break ties by asset_id (arbitrary) or split the last slot's weight among the tied names (keeps the exposure count exact).
+  - **Trailing week / month excluded**: `"W"` / `"M"` use the last session *present in the index*, and a period counts as ended only once a later session exists. A backtest is unaffected, but in a live run the month-end row becomes known only once the next session's bar is in the data, i.e. after the open it should execute at; a live engine needs the trading calendar. Alternative: an NSE trading calendar (holiday list) to know the true last session in advance; not in the repo.
+  - **`"<n>D"` is anchored at the first session of the panel**, so its phase depends on the start date. Alternative: anchor on a fixed epoch session.
+  - **Equal weight** within the selection (1 / n_selected), not signal- or inverse-vol-weighted; allocation work is frozen (CLAUDE.md priority 4).
+
 ## Decided
 - 2026-10-17 **Zero-volume flat daily bars** (O=H=L=C, volume 0, e.g. 2025-03-18 and 2026-01-15) are yfinance placeholders and are rejected by `quality.py`. They are not real sessions, and they would inject fake zero-range bars into ATR and the patterns. Backup before purge: `~/investbot_data/investbot.db.pre-dq-purge-20261017`.
 - 2026-10-17 **Stale recent bars**: upsert a trailing window (5 daily sessions, 2 intraday days) and never store today's daily bar before 16:00 IST. This is task 000-ingest-refresh-window.
