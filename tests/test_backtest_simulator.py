@@ -262,13 +262,18 @@ def test_truncation_invariance():
     w, open_, close, divs = _random_fixture()
     full = simulate(w, open_, close, divs)
     assert (full.daily["tax_paid"] > 0).any()  # the window crosses a paid FY boundary
+    # both FYs have a dividend, so tax_accrued and tax_paid carry dividend tax (task 620)
+    assert all(t > 0 for _, t in full.dividend_tax.values())
     # tax_accrued (compressed realisations) agrees with the full-list ledger
     last_fy = list(full.fiscal_years)[-1]
     assert full.daily["tax_accrued"].iloc[-1] == pytest.approx(
-        full.fiscal_years[last_fy].estimated_tax_liability, rel=1e-12, abs=1e-6
+        full.fiscal_years[last_fy].estimated_tax_liability + full.dividend_tax[last_fy][1],
+        rel=1e-12, abs=1e-6,
     )
     paid = full.daily["tax_paid"][full.daily["tax_paid"] > 0]
-    assert paid.iloc[0] == pytest.approx(full.fiscal_years["2024-25"].estimated_tax_liability)
+    assert paid.iloc[0] == pytest.approx(
+        full.fiscal_years["2024-25"].estimated_tax_liability + full.dividend_tax["2024-25"][1]
+    )
     for T in (close.index[40], close.index[127], close.index[128], close.index[300]):
         trunc = simulate(w[w.index <= T], open_[:T], close[:T], divs[:T])
         pd.testing.assert_frame_equal(trunc.daily, full.daily.loc[:T], rtol=0, atol=1e-9)

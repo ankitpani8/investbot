@@ -18,10 +18,11 @@ Timing (the lookahead contract)
 
 Order of events on a session *s*
     1. Fiscal-year rollover (first session on or after 1 April): every FY closed since the
-       previous session gets ``compute_fiscal_year_tax`` (carry-forward chained).
+       previous session gets ``compute_fiscal_year_tax`` (carry-forward chained) and
+       ``dividend_tax_for_fy`` on its gross dividends.
     2. Dividends: ``qty held at the previous close x dividend`` (gross) is added to cash.
-    3. Tax payment (``tax=True``): the closed FY's ``estimated_tax_liability`` is paid from
-       cash. If cash is short, every holding with a valid open is sold pro rata at the open
+    3. Tax payment (``tax=True``): the closed FY's ``estimated_tax_liability`` plus its
+       dividend tax is paid from cash. If cash is short, every holding with a valid open is sold pro rata at the open
        so the proceeds net of sell costs cover the shortfall; those sales are ordinary
        realisations of the new FY. If even a full sale cannot cover it, cash goes negative.
     4. Rebalance, if a decision executes at *s* and the portfolio is not ruined: NAV at the
@@ -67,13 +68,28 @@ so ``simulate`` raises ValueError if the first execution session is before that 
 Tax (``tax=True``): every ``Realisation`` is collected; at each FY end the FY's tax is
 computed with the previous FY's ``carry_forward_out`` and paid on the first session on or
 after 1 April. ``tax_accrued`` is the liability of the current FY's realisations so far
-(recomputed only on days with realisations); ``nav_after_tax = nav - tax_accrued``.
+(recomputed only on days with realisations) plus the dividend tax of the current FY's
+dividends so far (recomputed only on days with a dividend); ``nav_after_tax = nav -
+tax_accrued``.
+
+Dividend tax (``tax=True`` and ``dividend_slab_rate`` not None): gross dividends are summed
+per FY of their ex-date (the session they are credited on) and taxed with
+``dividend_tax.dividend_tax_for_fy(fy, gross, slab_rate=dividend_slab_rate,
+surcharge_rate=surcharge_rate)``: exempt before FY 2016-17, s.115BBDA (10% above ₹10 lakh)
+in FY 2016-17 to 2019-20, the slab rate from FY 2020-21. The ₹10 lakh threshold sees only
+this portfolio's dividends. The tax joins the FY's capital-gains tax in the April payment
+and in ``tax_accrued``, but is kept apart from ``FiscalYearTax`` (``result.dividend_tax``).
+``liquidation_tax`` has no dividend part: a terminal sale pays no dividend.
+``dividend_slab_rate=None`` leaves dividends untaxed (``result.dividend_tax`` still lists
+the gross per FY, with 0.0 tax).
 ``fmv_2018_01_31`` (per asset_id, same share basis as the prices) is passed to
 ``sell_fifo`` for the grandfathered cost of pre-2018-02-01 lots. ``tax=False`` still
 charges costs and collects realisations but never computes or pays tax.
 
-Not modelled: tax on dividend income (slab rate from 2020-04-01, DDT paid by the company
-before), so ``dividends`` are reported gross; DP charges; the TDS credit (equity has none);
+Not modelled: the s.57 interest-deduction cap, the basic exemption and s.87A rebate for
+dividend income, and the DDT the company paid before FY 2020-21 (the stored dividend is
+what the shareholder received; ``dividends`` in ``daily`` are reported gross of the
+shareholder's own dividend tax); TDS on dividends (a prepayment of the same tax); DP charges; the TDS credit (equity has none);
 interest on cash; advance-tax instalments (the whole liability is paid once, in April).
 A held asset whose prices stop is kept at its last close; there is no forced liquidation
 rule (docs/DECISIONS_PENDING.md, "Backtest simulator").
@@ -89,6 +105,7 @@ import numpy as np
 import pandas as pd
 
 from investbot.trading import tax_rules
+from investbot.trading.dividend_tax import DIVIDEND_SLAB_RATE, dividend_tax_for_fy
 from investbot.trading.lot_tracker import Lot, Realisation, sell_fifo
 from investbot.trading.tax_ledger import (
     CarryForward,
@@ -124,7 +141,9 @@ class SimulationResult:
 
     ``fiscal_years`` holds every FY from the first execution session's FY to the last
     session's FY. All but the last are closed and paid; the last one is still open (its
-    liability is the final ``tax_accrued``, not paid). Empty when ``tax=False``.
+    liability, plus its dividend tax, is the final ``tax_accrued``, not paid). Empty when
+    ``tax=False``. ``dividend_tax`` maps the same FY labels to (gross dividends, dividend
+    tax); it is not part of ``FiscalYearTax.estimated_tax_liability``.
     Terminal after-tax value = ``nav - tax_accrued - liquidation_tax`` on the last row;
     ``liquidation_tax`` is negative when the terminal sale would harvest a loss against
     gains already realised in the last FY. ``trades`` lists rebalance legs and the April
@@ -141,6 +160,7 @@ class SimulationResult:
     stale_marks: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=STALE_COLUMNS))
     liquidation_tax: float = 0.0
     ruined_on: date | None = None
+    dividend_tax: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 def _fy_start(label: str) -> int:
@@ -218,13 +238,17 @@ def simulate(
     fmv_2018_01_31: dict[int, float] | None = None,
     min_trade_value: float = 0.0,
     surcharge_rate: float = 0.0,
+    dividend_slab_rate: float | None = DIVIDEND_SLAB_RATE,
 ) -> SimulationResult:
     """Replay a target-weight schedule on daily prices (see the module docstring).
 
     ``target_weights``: decision dates x asset_id, weights >= 0, row sum <= 1 (+1e-9), the
     remainder is cash, NaN = 0. ``open_`` / ``close`` / ``dividends``: sessions x asset_id
     (same index and columns); ``dividends`` is gross cash per share on the ex-date bar.
-    Raises ValueError for malformed inputs or a first execution before 2004-10-01.
+    ``dividend_slab_rate``: slab rate on dividends from FY 2020-21 (module docstring);
+    None = dividends untaxed. ``surcharge_rate`` applies to both capital-gains and
+    dividend tax. Raises ValueError for malformed inputs, a rate outside [0, 1] or a first
+    execution before 2004-10-01.
     """
     _check_frame("close", close, open_)
     if dividends is not None:
@@ -238,6 +262,8 @@ def simulate(
         raise ValueError("initial_capital must be > 0")
     if min_trade_value < 0:
         raise ValueError("min_trade_value must be >= 0")
+    if dividend_slab_rate is not None and not 0.0 <= dividend_slab_rate <= 1.0:
+        raise ValueError("dividend_slab_rate must be in [0, 1] or None")
 
     assets = open_.columns
     asset_ids = [int(a) for a in assets]
@@ -279,8 +305,20 @@ def simulate(
     fiscal_years: dict[str, FiscalYearTax] = {}
     carry_in: CarryForward | None = None
     tax_accrued = 0.0
+    cg_accrued = 0.0  # capital-gains part of tax_accrued
+    div_accrued = 0.0  # dividend part of tax_accrued
+    fy_dividends = 0.0  # gross dividends of the open FY
+    dividend_tax: dict[str, tuple[float, float]] = {}
     ruined_on: date | None = None
     regime_cache: dict[date, tax_rules.TaxRegimeParams] = {}
+
+    def div_tax(label: str, gross: float) -> float:
+        if dividend_slab_rate is None:
+            return 0.0
+        return dividend_tax_for_fy(
+            label, gross, slab_rate=dividend_slab_rate, surcharge_rate=surcharge_rate
+        )
+
     trade_rows: dict[str, list] = {c: [] for c in TRADE_COLUMNS}
     out = {c: np.zeros(n_sess) for c in DAILY_COLUMNS}
 
@@ -365,15 +403,23 @@ def simulate(
                 fiscal_years[label] = closed
                 carry_in = closed.carry_forward_out
                 due += closed.estimated_tax_liability
+                gross_div = fy_dividends if label == prev_fy else 0.0
+                tax_div = div_tax(label, gross_div)
+                dividend_tax[label] = (gross_div, tax_div)
+                due += tax_div
             fy_realisations = []
             fy_sums = {}
             n_realised = 0
             tax_accrued = 0.0
+            cg_accrued = 0.0
+            div_accrued = 0.0
+            fy_dividends = 0.0
         prev_fy = fy
 
         # 2. dividends on the ex-date bar, on the quantity held at the previous close
         day_div = float(qty @ divs[s])
         cash += day_div
+        fy_dividends += day_div
 
         # 3. tax payment, selling pro rata at the open if cash is short
         if due > 0:
@@ -448,9 +494,12 @@ def simulate(
         holdings = float(np.where(qty > 0, qty * np.nan_to_num(mark, nan=0.0), 0.0).sum())
 
         if tax and len(fy_realisations) != n_realised:
-            tax_accrued = compute_fiscal_year_tax(
+            cg_accrued = compute_fiscal_year_tax(
                 _compressed(fy_sums), fy, carry_in, surcharge_rate=surcharge_rate
             ).estimated_tax_liability
+        if tax and day_div != 0.0:
+            div_accrued = div_tax(fy, fy_dividends)
+        tax_accrued = cg_accrued + div_accrued
 
         nav = cash + holdings
         if ruined_on is None and nav <= RUIN_NAV:
@@ -471,6 +520,7 @@ def simulate(
         fiscal_years[fy] = compute_fiscal_year_tax(
             fy_realisations, fy, carry_in, surcharge_rate=surcharge_rate
         )
+        dividend_tax[fy] = (fy_dividends, div_tax(fy, fy_dividends))
         reg = regime(last)
         candidates: list[Realisation] = []
         for j in np.flatnonzero(qty > 0):
@@ -499,6 +549,7 @@ def simulate(
         stale_marks=stale,
         liquidation_tax=liquidation_tax,
         ruined_on=ruined_on,
+        dividend_tax=dividend_tax,
     )
 
 

@@ -149,7 +149,13 @@ def test_hand_computed_kpis():
     # the asset-1 sale: short-term gain, FY 2024-25 tax paid 2025-04-01
     basis = 150_000 + deductible_costs(estimate_costs("BUY", 150_000.0, reg))
     gain = 180_000 - basis - deductible_costs(sell1)
-    tax_paid = gain * 0.20 * 1.04
+    cg_tax = gain * 0.20 * 1.04
+    # dividend tax (task 620): the 3,750 dividend of 2024-09-02 falls in FY 2024-25, taxed at
+    # the 30% default slab plus 4% cess = 1,170.0, paid with the STCG tax on 2025-04-01
+    # (cash covers both, no tax-cover sale)
+    div_tax = total_div * 0.30 * 1.04
+    assert div_tax == pytest.approx(1_170.0, abs=1e-9)
+    tax_paid = cg_tax + div_tax
     cash = h["cash_after_div"] + 180_000 - sell1.total - tax_paid
 
     # terminal liquidation of assets 2 and 3 on 2025-12-31 (held > 365 days: long term)
@@ -194,7 +200,10 @@ def test_hand_computed_kpis():
     t = fy_tax_table(res)
     assert list(t.index) == ["2023-24", "2024-25", "2025-26"]
     assert t.loc["2024-25", "realized_stcg"] == pytest.approx(gain, abs=1e-6)
-    assert t.loc["2024-25", "estimated_tax_liability"] == pytest.approx(tax_paid, abs=1e-6)
+    assert t.loc["2024-25", "estimated_tax_liability"] == pytest.approx(cg_tax, abs=1e-6)
+    assert t.loc["2024-25", "dividend_income"] == pytest.approx(total_div, abs=1e-9)
+    assert t.loc["2024-25", "dividend_tax"] == pytest.approx(div_tax, abs=1e-9)
+    assert t.loc[["2023-24", "2025-26"], ["dividend_income", "dividend_tax"]].eq(0.0).all().all()
     assert list(t["paid"]) == [True, True, False]
 
 
@@ -299,10 +308,13 @@ def test_fy_tax_table_columns_and_paid_flag():
         assert t.loc[label, "realized_stcl"] == fy.realized_stcl
         assert t.loc[label, "carried_forward_ltcl"] == fy.carried_forward_ltcl
         assert t.loc[label, "estimated_tax_liability"] == fy.estimated_tax_liability
-    # the paid liabilities are exactly what left the cash
-    assert t.loc[t["paid"], "estimated_tax_liability"].sum() == pytest.approx(
-        res.daily["tax_paid"].sum(), abs=1e-6
-    )
+    for label, (gross, tax) in res.dividend_tax.items():
+        assert t.loc[label, "dividend_income"] == gross
+        assert t.loc[label, "dividend_tax"] == tax
+    assert (t["dividend_tax"] > 0).any()
+    # the paid liabilities (capital gains plus dividends) are exactly what left the cash
+    paid = t.loc[t["paid"], ["estimated_tax_liability", "dividend_tax"]].to_numpy().sum()
+    assert paid == pytest.approx(res.daily["tax_paid"].sum(), abs=1e-6)
     assert t["paid"].dtype == bool
 
 

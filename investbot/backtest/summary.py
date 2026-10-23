@@ -76,10 +76,11 @@ GO_NO_GO: dict[str, dict] = {
 }
 GO_NO_GO_COLUMNS = ["metric", "value", "minimum", "target", "meets_minimum", "meets_target"]
 
-FY_TAX_COLUMNS = [
+_FY_LEDGER_COLUMNS = (  # FiscalYearTax fields, in table order
     "realized_stcg", "realized_ltcg", "ltcg_exemption_used", "realized_stcl", "realized_ltcl",
-    "carried_forward_stcl", "carried_forward_ltcl", "estimated_tax_liability", "paid",
-]
+    "carried_forward_stcl", "carried_forward_ltcl", "estimated_tax_liability",
+)
+FY_TAX_COLUMNS = [*_FY_LEDGER_COLUMNS, "dividend_income", "dividend_tax", "paid"]
 
 
 def _cagr(terminal_value: float, initial_nav: float, years: float) -> float:
@@ -200,16 +201,23 @@ def fy_tax_table(result: SimulationResult) -> pd.DataFrame:
 
     Columns are the ``FiscalYearTax`` fields ``realized_stcg``, ``realized_ltcg``,
     ``ltcg_exemption_used``, ``realized_stcl``, ``realized_ltcl``, ``carried_forward_stcl``
-    and ``carried_forward_ltcl`` (the carry-forward out of that FY),
-    ``estimated_tax_liability``, plus ``paid``: False only for the last FY, which is still
-    open (its liability is the run's ``terminal_tax_accrued``, not paid). Empty for ``tax=False``.
+    and ``carried_forward_ltcl`` (the carry-forward out of that FY) and
+    ``estimated_tax_liability`` (capital gains only); then ``dividend_income`` and
+    ``dividend_tax`` from ``result.dividend_tax`` (gross dividends of the FY and their tax,
+    0.0 when the result has no entry for the FY); then ``paid``: False only for the last FY,
+    which is still open (its capital-gains and dividend tax together are the run's
+    ``terminal_tax_accrued``, not paid). A paid FY's April payment is
+    ``estimated_tax_liability + dividend_tax``. Empty for ``tax=False``.
     """
     labels = list(result.fiscal_years)
     cols: dict[str, list] = {c: [] for c in FY_TAX_COLUMNS}
     for i, label in enumerate(labels):
         fy = result.fiscal_years[label]
-        for c in FY_TAX_COLUMNS[:-1]:
+        for c in _FY_LEDGER_COLUMNS:
             cols[c].append(float(getattr(fy, c)))
+        gross, tax = result.dividend_tax.get(label, (0.0, 0.0))
+        cols["dividend_income"].append(float(gross))
+        cols["dividend_tax"].append(float(tax))
         cols["paid"].append(i < len(labels) - 1)
     out = pd.DataFrame(cols, index=pd.Index(labels, name="fiscal_year"), columns=FY_TAX_COLUMNS)
     out["paid"] = out["paid"].astype(bool)
