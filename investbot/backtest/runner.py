@@ -155,15 +155,12 @@ def _drop_empty_columns(inp: BacktestInputs) -> tuple[BacktestInputs, list[str]]
 
 
 def _simulate(label: str, *args, **kwargs) -> SimulationResult:
-    """``simulate`` with the run's label in the error (a ruined portfolio cannot be simulated)."""
+    """``simulate`` with the run's label in the error (malformed inputs only: a ruined
+    portfolio is a result, ``SimulationResult.ruined_on``, not an error)."""
     try:
         return simulate(*args, **kwargs)
     except ValueError as e:
-        raise ValueError(
-            f"simulating the {label} run failed: {e}. A high-turnover schedule can exhaust the "
-            "capital in costs, and the simulator does not handle a portfolio with NAV <= 0 yet "
-            "(BACKLOG, task 600 follow-ups); try a lower rebalance frequency."
-        ) from e
+        raise ValueError(f"simulating the {label} run failed: {e}") from e
 
 
 def _notice(text: str) -> None:
@@ -401,6 +398,13 @@ def _caveats(run: BacktestRun) -> str:
     n_pre = int((dates < pd.Timestamp(run.complete_from)).sum()) if len(dates) else 0
     share = n_pre / len(dates) if len(dates) else math.nan
     lines = []
+    for label, res in ((STRATEGY, run.strategy), (TAX_NAIVE, run.strategy_tax_naive),
+                       (BENCHMARK, run.benchmark)):
+        if res.ruined_on is not None:
+            lines.append(f"- **strategy ruined on {res.ruined_on.isoformat()}: costs/tax "
+                         "exhausted the capital; KPIs after that date describe a liquidated "
+                         f"portfolio** (run `{label}`; DECISIONS_PENDING \"Backtest simulator: "
+                         "ruin convention\").")
     if p["universe"] == "active":
         lines.append("- **Universe `active` is today's active stocks**: survivorship bias, "
                      "every name is a member on every date.")

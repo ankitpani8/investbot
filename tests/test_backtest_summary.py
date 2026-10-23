@@ -318,7 +318,9 @@ def test_compare_columns_drag_and_excess():
     assert list(c.index) == ["strat", "bench"]
     after = [f"{k}_after_tax" for k in KPI_KEYS]
     pre = [f"{k}_pre_tax" for k in KPI_KEYS]
-    assert list(c.columns) == [*after, *pre, "tax_drag_cagr", "excess_cagr_after_tax"]
+    assert list(c.columns) == [
+        *after, *pre, "tax_drag_cagr", "excess_cagr_after_tax", "ruined_on"
+    ]
     row = c.loc["strat"]
     ka, kp = kpis(taxed, after_tax=True), kpis(taxed, after_tax=False)
     assert row["cagr_after_tax"] == ka["cagr"] and row["cagr_pre_tax"] == kp["cagr"]

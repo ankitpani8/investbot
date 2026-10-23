@@ -217,6 +217,33 @@ def test_simulator_error_names_the_run(monkeypatch):
     s.close()
 
 
+def test_ruined_strategy_is_reported_not_raised():
+    """₹500 rebalanced daily: the flat brokerage exhausts the capital (task 610)."""
+    s = _new_session()
+    dates = pd.bdate_range("2021-01-01", periods=120)
+    for i, name in enumerate("ABCD"):
+        _fill(s, f"{name}.NS", _bars(dates, i, 0.0), stints=[(dates[0].date(), None)])
+    run = run_backtest(s, signal="BASE_MOM_20", freq="D", start=None, end=None, min_names=3,
+                       quantile=0.5, initial_capital=500.0)
+    s.close()
+    ruined = {label: res.ruined_on for label, res in
+              ((STRATEGY, run.strategy), (TAX_NAIVE, run.strategy_tax_naive),
+               (BENCHMARK, run.benchmark))}
+    assert ruined[STRATEGY] is not None
+    assert run.compare["ruined_on"].to_dict() == {
+        k: (None if v is None else v.isoformat()) for k, v in ruined.items()}
+    trades = run.strategy.trades
+    late = trades[pd.to_datetime(trades["date"]) > pd.Timestamp(ruined[STRATEGY])]
+    assert (late["side"] == "SELL").all()
+    text = render_report(run)
+    caveats = text.split(f"## {SECTIONS[6]}")[1]
+    for label, d in ruined.items():
+        line = (f"strategy ruined on {d.isoformat()}: costs/tax exhausted the capital; KPIs "
+                f"after that date describe a liquidated portfolio** (run `{label}`")
+        assert (line in caveats) == (d is not None)
+    assert caveats.count("strategy ruined on") == sum(d is not None for d in ruined.values())
+
+
 def test_drops_member_without_bar_in_window(db):
     s, ids = db
     run = run_backtest(s, freq="M", start=date(2022, 9, 1), end=None, **KW)

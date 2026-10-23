@@ -24,15 +24,33 @@ Order of events on a session *s*
        cash. If cash is short, every holding with a valid open is sold pro rata at the open
        so the proceeds net of sell costs cover the shortfall; those sales are ordinary
        realisations of the new FY. If even a full sale cannot cover it, cash goes negative.
-    4. Rebalance, if a decision executes at *s*: NAV at the open = cash + sum(qty x open)
-       (an asset with no valid open is valued at its last valid close). Target quantity =
-       w x NAV / open. Sells first (``sell_fifo`` with ``estimate_costs("SELL", ...)``), then
+    4. Rebalance, if a decision executes at *s* and the portfolio is not ruined: NAV at the
+       open = cash + sum(qty x open) (an asset with no valid open is valued at its last valid
+       close). Target quantity = max(0, w x NAV / open). Sells first (``sell_fifo`` with ``estimate_costs("SELL", ...)``), then
        buys; if buys plus their costs exceed the cash, all buys are scaled by one common
        factor so cash ends >= 0. One order per asset leg for brokerage. A leg whose
        |change| is below ``_REL_QTY_TOL`` of the larger of held and target quantity (float
-       noise) or whose value is below ``min_trade_value`` is skipped.
-    5. Close: ``nav`` = cash + sum(qty x close). A held asset with no valid close is marked
-       at its last valid close (``stale_marks``).
+       noise) or whose value is below ``min_trade_value`` is skipped. A sell never asks
+       ``sell_fifo`` for more than the held quantity.
+    5. Ruin: if the NAV at the open of a rebalance session is ``<= RUIN_NAV``, *s* is
+       ``ruined_on`` and the decision is not executed. From then on no buy is placed again:
+       on every session on or after ``ruined_on`` (from the next session's open when the
+       ruin is found at a close) every holding with a valid open is sold in full, whatever
+       ``target_weights`` says and regardless of ``min_trade_value``; a holding with no valid
+       open is sold at the first later session that has one.
+    6. Close: ``nav`` = cash + sum(qty x close). A held asset with no valid close is marked
+       at its last valid close (``stale_marks``). If ``nav <= RUIN_NAV`` and the portfolio
+       is not ruined yet, *s* is ``ruined_on``.
+
+Ruin (``ruined_on``)
+    A schedule whose costs exhaust the capital (e.g. daily rebalancing of a small capital
+    against the flat brokerage) is a reported outcome, not an error: the run continues to
+    the last session as a liquidated portfolio. Dividends are still credited, the FY tax is
+    still computed and paid when due (cash may go negative there, as for any run), and
+    ``nav`` may be negative. Ruin on *s* uses only the NAV from prices up to *s* (the open
+    of *s* for a rebalance session, otherwise its close), so it keeps the lookahead
+    contract. The convention is reversible (docs/DECISIONS_PENDING.md, "Backtest simulator:
+    ruin convention").
 
 Quantities are fractional. Stored ``open``/``close`` are on today's share basis (Yahoo
 restates them for later splits and bonuses), so the whole-share counts an investor held
@@ -84,6 +102,7 @@ FIRST_EQUITY_REGIME_DATE = date(2004, 10, 1)  # regime_for("equity", d) raises b
 _WEIGHT_SUM_TOL = 1e-9
 _REL_QTY_TOL = 1e-9  # a leg smaller than this share of max(held, target) is float noise
 _SCALE_MARGIN = 1e-12  # float headroom (share of the legs' value) so cash ends >= 0
+RUIN_NAV: float = 0.0  # NAV at or below this (at a rebalance open or a close) ruins the run
 
 DAILY_COLUMNS = [
     "cash",
@@ -110,6 +129,9 @@ class SimulationResult:
     ``liquidation_tax`` is negative when the terminal sale would harvest a loss against
     gains already realised in the last FY. ``trades`` lists rebalance legs and the April
     tax-cover sales in execution order. ``stale_marks`` has one row per stale episode.
+    ``ruined_on`` is the first session on which the portfolio counted as ruined (NAV at a
+    rebalance open or at a close ``<= RUIN_NAV``), None if it never was; from it on the
+    run is a liquidated portfolio (see the module docstring).
     """
 
     daily: pd.DataFrame
@@ -118,6 +140,7 @@ class SimulationResult:
     fiscal_years: dict[str, FiscalYearTax] = field(default_factory=dict)
     stale_marks: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=STALE_COLUMNS))
     liquidation_tax: float = 0.0
+    ruined_on: date | None = None
 
 
 def _fy_start(label: str) -> int:
@@ -256,6 +279,7 @@ def simulate(
     fiscal_years: dict[str, FiscalYearTax] = {}
     carry_in: CarryForward | None = None
     tax_accrued = 0.0
+    ruined_on: date | None = None
     regime_cache: dict[date, tax_rules.TaxRegimeParams] = {}
     trade_rows: dict[str, list] = {c: [] for c in TRADE_COLUMNS}
     out = {c: np.zeros(n_sess) for c in DAILY_COLUMNS}
@@ -367,18 +391,23 @@ def simulate(
             day_tax_paid = due
 
         # 4. rebalance
-        weights = schedule.get(s)
+        weights = schedule.get(s) if ruined_on is None else None
         if weights is not None:
             value_at = np.where(tradable, op, mark)
             held_value = np.where(qty > 0, qty * np.nan_to_num(value_at, nan=0.0), 0.0)
             nav_open = cash + float(held_value.sum())
+            if nav_open <= RUIN_NAV:
+                ruined_on = d
+                weights = None
+        if weights is not None:
             target = np.where(tradable, weights * nav_open / np.where(tradable, op, 1.0), qty)
+            target = np.maximum(target, 0.0)
             delta = target - qty
             noise = np.abs(delta) <= _REL_QTY_TOL * np.maximum(np.abs(qty), np.abs(target))
             small = np.abs(delta) * np.where(tradable, op, 0.0) < min_trade_value
             skip = ~tradable | noise | small
             for j in np.flatnonzero(~skip & (delta < 0)):
-                q = qty[j] if target[j] <= _REL_QTY_TOL * qty[j] else -delta[j]
+                q = qty[j] if target[j] <= _REL_QTY_TOL * qty[j] else min(-delta[j], qty[j])
                 day_costs += sell(j, q, op[j], d)
             buys = np.flatnonzero(~skip & (delta > 0))
             if buys.size:
@@ -393,7 +422,12 @@ def simulate(
                     for j, v in zip(buys, values):
                         day_costs += buy(j, v * scale / op[j], op[j], d)
 
-        # 5. close: marks, stale marks, NAV
+        # 5. ruined: sell every holding with a valid open in full, never buy again
+        if ruined_on is not None:
+            for j in np.flatnonzero((qty > 0) & tradable):
+                day_costs += sell(j, qty[j], op[j], d)
+
+        # 6. close: marks, stale marks, NAV
         cl = closes[s]
         valid_close = ~np.isnan(cl) & (cl > 0)
         for j in np.flatnonzero(valid_close):
@@ -419,6 +453,8 @@ def simulate(
             ).estimated_tax_liability
 
         nav = cash + holdings
+        if ruined_on is None and nav <= RUIN_NAV:
+            ruined_on = d  # liquidation starts at the next open: this open has passed
         out["cash"][s] = cash
         out["holdings_value"][s] = holdings
         out["nav"][s] = nav
@@ -462,6 +498,7 @@ def simulate(
         fiscal_years=fiscal_years,
         stale_marks=stale,
         liquidation_tax=liquidation_tax,
+        ruined_on=ruined_on,
     )
 
 
@@ -469,7 +506,11 @@ def daily_returns(result: SimulationResult, after_tax: bool = True) -> pd.Series
     """Simple daily returns of ``nav_after_tax`` (or ``nav``); the first session is NaN.
 
     Ready for ``performance.sharpe(r, periods_per_year=252)`` and friends, which ignore
-    the NaN. Nothing is dropped.
+    the NaN. Nothing is dropped. A return whose base (the previous session's value) is
+    ``<= 0`` is NaN: a simple return off a non-positive base has no meaning. So on a ruined
+    curve the return into the first non-positive value is ``<= -1`` (a total loss) and every
+    later return off a non-positive value is NaN. A curve that stays positive is unaffected.
     """
     nav = result.daily["nav_after_tax" if after_tax else "nav"]
-    return nav / nav.shift(1) - 1.0
+    base = nav.shift(1)
+    return (nav / base - 1.0).where(base > 0)

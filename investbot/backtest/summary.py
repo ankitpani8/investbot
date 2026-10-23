@@ -22,6 +22,18 @@ Units
     **daily** positive losses. ``max_drawdown`` is <= 0 as ``performance.drawdown_stats``
     returns it. ``max_dd_duration_days`` counts trading sessions of the daily curve, not
     calendar days. ``start`` / ``end`` are ``pd.Timestamp``; the money columns are rupees.
+
+Ruined runs (``result.ruined_on`` set, the curve reaches 0 or goes negative)
+    Nothing raises. ``daily_returns`` is NaN for every return off a non-positive base, so
+    the return series ends with the drop into the first non-positive value (a return
+    ``<= -1``) and is NaN after it. On that series: ``sharpe``, ``sortino``, ``ann_vol`` and
+    VaR/CVaR are computed over the finite returns up to and including that drop (dominated
+    by it; NaN with fewer than 2 finite returns); ``max_drawdown`` is ``<= -1`` (exactly -1
+    when the curve hits 0, below -1 when it goes negative), so it reads as a total loss;
+    ``cagr`` is NaN when the terminal value is < 0 and -1 when it is exactly 0; ``calmar``
+    is NaN when ``cagr`` is NaN, else ``cagr / abs(max_drawdown)``. ``turnover_annual`` is
+    NaN when the mean ``nav`` is <= 0. ``monthly_table`` has the drop in its month and NaN
+    after it. ``compare`` carries ``ruined_on`` so a reader sees which rows these are.
 """
 
 from __future__ import annotations
@@ -213,7 +225,9 @@ def compare(
     ``tax_drag_cagr = cagr_pre_tax - cagr_after_tax`` (what the module docstring says that
     covers). With ``benchmark`` (a key of ``results``, whatever run the caller chose, not
     necessarily an index) also ``excess_cagr_after_tax`` = the row's ``cagr_after_tax`` minus
-    the benchmark row's. Rows keep the order of ``results``; nothing is ranked or filtered.
+    the benchmark row's. The last column is ``ruined_on``: the run's ``ruined_on`` as an ISO
+    date string, or None (module docstring, "Ruined runs"). Rows keep the order of
+    ``results``; nothing is ranked or filtered.
     """
     if benchmark is not None and benchmark not in results:
         raise ValueError(f"benchmark {benchmark!r} is not one of the results: {list(results)}")
@@ -230,6 +244,10 @@ def compare(
         table["excess_cagr_after_tax"] = (
             table["cagr_after_tax"] - table.loc[benchmark, "cagr_after_tax"]
         )
+    table["ruined_on"] = pd.Series(
+        [None if res.ruined_on is None else res.ruined_on.isoformat() for res in results.values()],
+        index=table.index, dtype=object,
+    )
     return table
 
 
