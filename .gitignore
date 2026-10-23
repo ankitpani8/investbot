@@ -29,6 +29,7 @@ tmp_output/
 *.csv
 # sourced reference data that ships with the code
 !investbot/config/index_history/*.csv
+!investbot/config/charges_history/*.csv
 *.parquet
 
 # Large / personal docs
